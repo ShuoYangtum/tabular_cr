@@ -3,8 +3,8 @@
 Train a robust tree-based regressor from train table and generate predictions for test table.
 
 Goal:
-- Train with all columns except target from train file.
-- Predict target values for test file.
+- Train residuals: residual = target - baseline.
+- Predict residuals for test file, then recover prediction with generated = baseline + residual_pred.
 - Save a new file with prediction column named `generated`.
 
 Supports:
@@ -41,6 +41,7 @@ DEFAULT_TRAIN_FILE = "../modified/train.csv"
 DEFAULT_TEST_FILE = "../modified/test.csv"
 DEFAULT_OUTPUT_FILE = "generated.csv"
 DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
+DEFAULT_BASELINE_COL = "wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
 
@@ -248,6 +249,11 @@ def main() -> int:
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE, help="Output CSV path")
     parser.add_argument("--target-col", default=DEFAULT_TARGET_COL, help="Target column name in train file")
     parser.add_argument(
+        "--baseline-col",
+        default=DEFAULT_BASELINE_COL,
+        help=f"Baseline column used for residual learning (default: {DEFAULT_BASELINE_COL})",
+    )
+    parser.add_argument(
         "--generated-col",
         default=DEFAULT_GENERATED_COL,
         help="Prediction column name in output file",
@@ -270,6 +276,7 @@ def main() -> int:
     test_path = Path(args.test_file)
     output_path = Path(args.output_file)
     target_col = args.target_col
+    baseline_col = args.baseline_col
     generated_col = args.generated_col
 
     if not train_path.exists():
@@ -299,9 +306,20 @@ def main() -> int:
         print(f"[ERROR] target column '{target_col}' not found in train file.")
         print(f"Available columns: {list(train_df.columns)}")
         return 1
+    if baseline_col not in train_df.columns:
+        print(f"[ERROR] baseline column '{baseline_col}' not found in train file.")
+        print(f"Available columns: {list(train_df.columns)}")
+        return 1
+    if baseline_col not in test_df.columns:
+        print(
+            f"[ERROR] baseline column '{baseline_col}' not found in test file. "
+            "Residual recovery requires baseline in test."
+        )
+        print(f"Available columns: {list(test_df.columns)}")
+        return 1
 
-    # Build feature set from train columns excluding target.
-    feature_cols = [c for c in train_df.columns if c != target_col]
+    # Build feature set from train columns excluding target and baseline.
+    feature_cols = [c for c in train_df.columns if c not in {target_col, baseline_col}]
     if not feature_cols:
         print("[ERROR] No feature columns found after excluding target column.")
         return 1
@@ -318,15 +336,20 @@ def main() -> int:
     X_train_raw = train_df[feature_cols].copy()
     X_test_raw = test_df[feature_cols].copy()
 
-    y_all = train_df[target_col].map(extract_numeric)
-    valid_target_mask = y_all.notna()
-    dropped_target_rows = int((~valid_target_mask).sum())
+    target_all = train_df[target_col].map(extract_numeric)
+    baseline_train_all = train_df[baseline_col].map(extract_numeric)
+    valid_train_mask = target_all.notna() & baseline_train_all.notna()
+    dropped_target_rows = int(target_all.isna().sum())
+    dropped_baseline_rows = int(baseline_train_all.isna().sum())
+    dropped_train_rows = int((~valid_train_mask).sum())
 
-    X_train_raw = X_train_raw.loc[valid_target_mask].reset_index(drop=True)
-    y_train = y_all.loc[valid_target_mask].to_numpy(dtype=float)
+    X_train_raw = X_train_raw.loc[valid_train_mask].reset_index(drop=True)
+    y_train_target = target_all.loc[valid_train_mask].to_numpy(dtype=float)
+    baseline_train = baseline_train_all.loc[valid_train_mask].to_numpy(dtype=float)
+    y_train_residual = y_train_target - baseline_train
 
-    if len(y_train) < 20:
-        print("[ERROR] Too few valid training rows after target cleaning (<20).")
+    if len(y_train_residual) < 20:
+        print("[ERROR] Too few valid training rows after cleaning target/baseline (<20).")
         return 1
 
     numeric_cols, categorical_cols = infer_feature_types(X_train_raw, args.numeric_like_threshold)
@@ -334,34 +357,43 @@ def main() -> int:
     X_test = apply_feature_cleaning(X_test_raw, numeric_cols, categorical_cols)
 
     # Quick holdout evaluation for sanity check (with progress bar).
-    x_tr, x_val, y_tr, y_val = train_test_split(
-        X_train, y_train, test_size=0.2, random_state=42
+    x_tr, x_val, y_res_tr, _, _, y_tar_val, _, base_val = train_test_split(
+        X_train,
+        y_train_residual,
+        y_train_target,
+        baseline_train,
+        test_size=0.2,
+        random_state=42,
     )
     eval_preprocessor, eval_model = fit_gbdt_with_progress(
         x_train=x_tr,
-        y_train=y_tr,
+        y_train=y_res_tr,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Training (validation model)",
     )
     x_val_t = eval_preprocessor.transform(x_val)
-    val_pred = eval_model.predict(x_val_t)
-    val_mae = mean_absolute_error(y_val, val_pred)
-    val_rmse = math.sqrt(mean_squared_error(y_val, val_pred))
-    val_r2 = r2_score(y_val, val_pred) if len(y_val) >= 2 else np.nan
+    val_residual_pred = eval_model.predict(x_val_t)
+    val_pred = base_val + val_residual_pred
+    val_mae = mean_absolute_error(y_tar_val, val_pred)
+    val_rmse = math.sqrt(mean_squared_error(y_tar_val, val_pred))
+    val_r2 = r2_score(y_tar_val, val_pred) if len(y_tar_val) >= 2 else np.nan
 
     # Refit on full cleaned train set for final prediction (with progress bar).
     final_preprocessor, final_model = fit_gbdt_with_progress(
         x_train=X_train,
-        y_train=y_train,
+        y_train=y_train_residual,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Training (final model)",
     )
     x_test_t = final_preprocessor.transform(X_test)
-    test_pred = final_model.predict(x_test_t)
+    test_residual_pred = final_model.predict(x_test_t)
+    baseline_test = test_df[baseline_col].map(extract_numeric).to_numpy(dtype=float)
+    test_pred = baseline_test + test_residual_pred
+    missing_test_baseline_rows = int(np.isnan(baseline_test).sum())
 
     output_df = test_df.copy()
     output_df[generated_col] = test_pred
@@ -377,10 +409,13 @@ def main() -> int:
     print(f"Test file: {test_path}")
     print(f"Output file: {output_path}")
     print(f"Target column: {target_col}")
+    print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
     print(f"Original train rows: {len(train_df)}")
-    print(f"Valid train rows used: {len(y_train)}")
+    print(f"Valid train rows used: {len(y_train_residual)}")
     print(f"Dropped rows (invalid target): {dropped_target_rows}")
+    print(f"Dropped rows (invalid baseline): {dropped_baseline_rows}")
+    print(f"Dropped rows (invalid target/baseline union): {dropped_train_rows}")
     print(f"Feature count: {len(feature_cols)}")
     print(f"Numeric features: {len(numeric_cols)}")
     print(f"Categorical features: {len(categorical_cols)}")
@@ -390,6 +425,11 @@ def main() -> int:
         print("Test file contains target column: no")
     if missing_in_test:
         print(f"Missing train features auto-filled in test: {len(missing_in_test)}")
+    if missing_test_baseline_rows > 0:
+        print(
+            "Rows with missing/invalid baseline in test: "
+            f"{missing_test_baseline_rows} (generated becomes NaN for these rows)"
+        )
     print()
 
     print("=== Holdout Metrics (20% validation split) ===")
