@@ -37,10 +37,10 @@ from sklearn.preprocessing import OrdinalEncoder
 # =========================
 # Editable defaults (quick way)
 # =========================
-DEFAULT_TRAIN_FILE = "train.csv"
-DEFAULT_TEST_FILE = "test.csv"
-DEFAULT_OUTPUT_FILE = "test_with_generated.csv"
-DEFAULT_TARGET_COL = "target"
+DEFAULT_TRAIN_FILE = "../modified/train.csv"
+DEFAULT_TEST_FILE = "../modified/test.csv"
+DEFAULT_OUTPUT_FILE = "generated.csv"
+DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
 
