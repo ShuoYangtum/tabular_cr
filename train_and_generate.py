@@ -50,6 +50,7 @@ NUMERIC_LIKE_THRESHOLD = 0.85
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 MISSING_STRINGS = {"", "nan", "none", "null", "na", "n/a", "-", "--", "unknown"}
+FLOAT32_SAFE_MAX = np.finfo(np.float32).max * 0.99
 
 
 def extract_numeric(value) -> float:
@@ -59,6 +60,8 @@ def extract_numeric(value) -> float:
     if isinstance(value, (int, float, np.number)):
         v = float(value)
         if math.isnan(v) or math.isinf(v):
+            return np.nan
+        if abs(v) > FLOAT32_SAFE_MAX:
             return np.nan
         return v
 
@@ -78,6 +81,8 @@ def extract_numeric(value) -> float:
     try:
         v = float(match.group())
         if math.isnan(v) or math.isinf(v):
+            return np.nan
+        if abs(v) > FLOAT32_SAFE_MAX:
             return np.nan
         return v
     except (ValueError, OverflowError):
@@ -145,6 +150,8 @@ def apply_feature_cleaning(
     out = pd.DataFrame(index=df.index)
     for col in numeric_cols:
         out[col] = df[col].map(extract_numeric)
+        # Replace any residual infinities to avoid sklearn finite-value checks.
+        out[col] = out[col].replace([np.inf, -np.inf], np.nan)
     for col in categorical_cols:
         out[col] = df[col].map(clean_categorical)
     return out
