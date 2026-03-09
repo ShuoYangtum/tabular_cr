@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""
+Measure prediction error between columns target (ground truth) and generated (prediction).
+
+Features:
+- Supports CSV / XLSX / XLS input.
+- Robust numeric cleaning: extracts numeric part from messy strings.
+- Ignores rows with missing/invalid values in target or generated.
+- Prints multiple metrics (MAE, RMSE, MAPE, sMAPE, R2, etc.).
+
+Usage:
+    # Option 1: set defaults at script top, then run:
+    python measure_error.py
+
+    # Option 2: pass args:
+    python measure_error.py --file data.csv
+    python measure_error.py --file data.xlsx --target-col target --generated-col generated
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import re
+import sys
+from pathlib import Path
+from typing import Tuple
+
+import numpy as np
+import pandas as pd
+
+
+# =========================
+# Editable defaults (quick way)
+# =========================
+# You can edit these values directly and run: python measure_error.py
+DEFAULT_FILE_PATH = ""
+DEFAULT_TARGET_COL = "target"
+DEFAULT_GENERATED_COL = "generated"
+
+
+NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def extract_numeric(value) -> float:
+    """
+    Convert potentially messy values to float.
+    Examples:
+      "12.3kg" -> 12.3
+      "about -7" -> -7.0
+      "1,234.56" -> 1234.56
+      "" / invalid -> NaN
+    """
+    if value is None:
+        return np.nan
+
+    if isinstance(value, (int, float, np.number)):
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return np.nan
+        return float(value)
+
+    s = str(value).strip()
+    if not s:
+        return np.nan
+
+    # Normalize common separators and whitespace.
+    s = s.replace(",", "")
+    s = re.sub(r"\s+", "", s)
+
+    # Handle explicit missing markers.
+    if s.lower() in {"nan", "none", "null", "na", "n/a", "-"}:
+        return np.nan
+
+    match = NUMERIC_PATTERN.search(s)
+    if not match:
+        return np.nan
+
+    try:
+        num = float(match.group())
+        if math.isinf(num) or math.isnan(num):
+            return np.nan
+        return num
+    except (ValueError, OverflowError):
+        return np.nan
+
+
+def load_table(file_path: Path) -> pd.DataFrame:
+    suffix = file_path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(file_path)
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(file_path)
+    raise ValueError(f"Unsupported file type: {suffix}. Use .csv/.xlsx/.xls")
+
+
+def safe_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    # Exclude rows where true value is 0 to avoid division by zero.
+    mask = y_true != 0
+    if not np.any(mask):
+        return np.nan
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
+
+
+def safe_smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    denom = np.abs(y_true) + np.abs(y_pred)
+    mask = denom != 0
+    if not np.any(mask):
+        return np.nan
+    return float(np.mean(2.0 * np.abs(y_pred[mask] - y_true[mask]) / denom[mask]) * 100)
+
+
+def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    # R2 undefined when y_true variance is zero.
+    if len(y_true) < 2:
+        return np.nan
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    if ss_tot == 0:
+        return np.nan
+    return float(1 - ss_res / ss_tot)
+
+
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    err = y_pred - y_true
+    abs_err = np.abs(err)
+
+    mae = float(np.mean(abs_err))
+    mse = float(np.mean(err**2))
+    rmse = float(np.sqrt(mse))
+    medae = float(np.median(abs_err))
+    bias = float(np.mean(err))  # positive means over-prediction
+    mape = safe_mape(y_true, y_pred)
+    smape = safe_smape(y_true, y_pred)
+    r2 = safe_r2(y_true, y_pred)
+
+    return {
+        "count_used": int(len(y_true)),
+        "mae": mae,
+        "mse": mse,
+        "rmse": rmse,
+        "median_ae": medae,
+        "bias_mean_error": bias,
+        "mape_percent": mape,
+        "smape_percent": smape,
+        "r2": r2,
+    }
+
+
+def prepare_data(df: pd.DataFrame, target_col: str, generated_col: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+    if target_col not in df.columns:
+        raise KeyError(f"Column '{target_col}' not found. Available columns: {list(df.columns)}")
+    if generated_col not in df.columns:
+        raise KeyError(f"Column '{generated_col}' not found. Available columns: {list(df.columns)}")
+
+    raw_count = len(df)
+
+    cleaned = pd.DataFrame(
+        {
+            "target": df[target_col].map(extract_numeric),
+            "generated": df[generated_col].map(extract_numeric),
+        }
+    )
+
+    invalid_target = int(cleaned["target"].isna().sum())
+    invalid_generated = int(cleaned["generated"].isna().sum())
+
+    cleaned = cleaned.dropna(subset=["target", "generated"])
+    used_count = len(cleaned)
+    dropped_count = raw_count - used_count
+
+    if used_count == 0:
+        raise ValueError("No valid paired numeric rows after cleaning. Check your data format.")
+
+    info = {
+        "raw_rows": raw_count,
+        "used_rows": used_count,
+        "dropped_rows": dropped_count,
+        "invalid_target_rows": invalid_target,
+        "invalid_generated_rows": invalid_generated,
+    }
+
+    return cleaned["target"].to_numpy(dtype=float), cleaned["generated"].to_numpy(dtype=float), info
+
+
+def fmt(v: float) -> str:
+    if isinstance(v, float) and np.isnan(v):
+        return "NaN"
+    return f"{v:.6f}"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Evaluate errors between columns target (true) and generated (pred)."
+    )
+    parser.add_argument(
+        "--file",
+        default=DEFAULT_FILE_PATH,
+        help="Input table file path (.csv/.xlsx/.xls). If omitted, use DEFAULT_FILE_PATH in script.",
+    )
+    parser.add_argument(
+        "--target-col",
+        default=DEFAULT_TARGET_COL,
+        help=f"Column name for true values (default: {DEFAULT_TARGET_COL})",
+    )
+    parser.add_argument(
+        "--generated-col",
+        default=DEFAULT_GENERATED_COL,
+        help=f"Column name for predicted values (default: {DEFAULT_GENERATED_COL})",
+    )
+    args = parser.parse_args()
+
+    if not args.file:
+        print(
+            "[ERROR] No input file provided. Set DEFAULT_FILE_PATH at top of script "
+            "or pass --file."
+        )
+        return 1
+
+    file_path = Path(args.file)
+    if not file_path.exists():
+        print(f"[ERROR] File not found: {file_path}")
+        return 1
+
+    try:
+        df = load_table(file_path)
+        y_true, y_pred, info = prepare_data(df, args.target_col, args.generated_col)
+        metrics = compute_metrics(y_true, y_pred)
+    except Exception as exc:
+        print(f"[ERROR] {exc}")
+        return 1
+
+    print("=== Data Cleaning Summary ===")
+    print(f"File: {file_path}")
+    print(f"Total rows: {info['raw_rows']}")
+    print(f"Used rows: {info['used_rows']}")
+    print(f"Dropped rows: {info['dropped_rows']}")
+    print(f"Rows with invalid target: {info['invalid_target_rows']}")
+    print(f"Rows with invalid generated: {info['invalid_generated_rows']}")
+    print()
+
+    print("=== Error Metrics (target=true, generated=pred) ===")
+    print(f"MAE            : {fmt(metrics['mae'])}")
+    print(f"MSE            : {fmt(metrics['mse'])}")
+    print(f"RMSE           : {fmt(metrics['rmse'])}")
+    print(f"MedianAE       : {fmt(metrics['median_ae'])}")
+    print(f"Bias(mean err) : {fmt(metrics['bias_mean_error'])}")
+    print(f"MAPE(%)        : {fmt(metrics['mape_percent'])}")
+    print(f"sMAPE(%)       : {fmt(metrics['smape_percent'])}")
+    print(f"R2             : {fmt(metrics['r2'])}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
