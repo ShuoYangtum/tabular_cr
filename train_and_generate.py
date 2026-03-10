@@ -19,6 +19,7 @@ Supports:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -33,6 +34,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -56,6 +59,8 @@ DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
+DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
+DEFAULT_MODEL_TYPE = "tabpfn"
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
 DEFAULT_GATE_QUANTILE = 0.6
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
@@ -216,7 +221,17 @@ def build_preprocessor(numeric_cols: List[str], categorical_cols: List[str]) -> 
     )
 
 
-def build_regressor(n_estimators: int) -> GradientBoostingRegressor:
+def build_regressor(model_type: str, n_estimators: int):
+    if model_type == "hgbt":
+        return HistGradientBoostingRegressor(
+            learning_rate=0.05,
+            max_iter=n_estimators,
+            max_leaf_nodes=31,
+            min_samples_leaf=20,
+            l2_regularization=1e-3,
+            random_state=42,
+            warm_start=True,
+        )
     return GradientBoostingRegressor(
         learning_rate=0.05,
         n_estimators=n_estimators,
@@ -228,7 +243,17 @@ def build_regressor(n_estimators: int) -> GradientBoostingRegressor:
     )
 
 
-def build_classifier(n_estimators: int) -> GradientBoostingClassifier:
+def build_classifier(model_type: str, n_estimators: int):
+    if model_type == "hgbt":
+        return HistGradientBoostingClassifier(
+            learning_rate=0.05,
+            max_iter=n_estimators,
+            max_leaf_nodes=31,
+            min_samples_leaf=20,
+            l2_regularization=1e-3,
+            random_state=42,
+            warm_start=True,
+        )
     return GradientBoostingClassifier(
         learning_rate=0.05,
         n_estimators=n_estimators,
@@ -427,6 +452,44 @@ def infer_feature_semantics_heuristic(train_df: pd.DataFrame, feature_cols: List
     return decisions
 
 
+def build_semantic_cache_fingerprint(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: List[str],
+) -> str:
+    payload = {
+        "train_columns": list(train_df.columns),
+        "test_columns": list(test_df.columns),
+        "feature_cols": list(feature_cols),
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def load_semantic_cache(cache_path: Path, fingerprint: str) -> Dict[str, Dict[str, Any]] | None:
+    if not cache_path.exists():
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        if data.get("fingerprint") != fingerprint:
+            return None
+        decisions = data.get("decisions")
+        if isinstance(decisions, dict):
+            return decisions
+        return None
+    except Exception:
+        return None
+
+
+def save_semantic_cache(cache_path: Path, fingerprint: str, decisions: Dict[str, Dict[str, Any]]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "fingerprint": fingerprint,
+        "decisions": decisions,
+    }
+    cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def apply_semantic_feature_engineering(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
@@ -520,13 +583,30 @@ def fit_gbdt_with_progress(
     categorical_cols: List[str],
     n_estimators: int,
     prefix: str,
-) -> Tuple[ColumnTransformer, GradientBoostingRegressor]:
+    model_type: str,
+):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
 
-    model = build_regressor(n_estimators=1)
+    if model_type == "tabpfn":
+        try:
+            from tabpfn import TabPFNRegressor
+        except Exception as exc:
+            raise RuntimeError(
+                "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
+            ) from exc
+        model = TabPFNRegressor()
+        print_progress_bar(0, 1, prefix=prefix)
+        model.fit(x_train_t, y_train)
+        print_progress_bar(1, 1, prefix=prefix)
+        return preprocessor, model
+
+    model = build_regressor(model_type=model_type, n_estimators=1)
     for i in range(1, n_estimators + 1):
-        model.set_params(n_estimators=i)
+        if model_type == "hgbt":
+            model.set_params(max_iter=i)
+        else:
+            model.set_params(n_estimators=i)
         model.fit(x_train_t, y_train)
         print_progress_bar(i, n_estimators, prefix=prefix)
 
@@ -540,13 +620,30 @@ def fit_gbdt_classifier_with_progress(
     categorical_cols: List[str],
     n_estimators: int,
     prefix: str,
-) -> Tuple[ColumnTransformer, GradientBoostingClassifier]:
+    model_type: str,
+):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
 
-    model = build_classifier(n_estimators=1)
+    if model_type == "tabpfn":
+        try:
+            from tabpfn import TabPFNClassifier
+        except Exception as exc:
+            raise RuntimeError(
+                "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
+            ) from exc
+        model = TabPFNClassifier()
+        print_progress_bar(0, 1, prefix=prefix)
+        model.fit(x_train_t, y_train)
+        print_progress_bar(1, 1, prefix=prefix)
+        return preprocessor, model
+
+    model = build_classifier(model_type=model_type, n_estimators=1)
     for i in range(1, n_estimators + 1):
-        model.set_params(n_estimators=i)
+        if model_type == "hgbt":
+            model.set_params(max_iter=i)
+        else:
+            model.set_params(n_estimators=i)
         model.fit(x_train_t, y_train)
         print_progress_bar(i, n_estimators, prefix=prefix)
 
@@ -789,6 +886,12 @@ def main() -> int:
         help=f"Number of boosting trees (default: {DEFAULT_N_ESTIMATORS}).",
     )
     parser.add_argument(
+        "--model-type",
+        default=DEFAULT_MODEL_TYPE,
+        choices=["gbdt", "hgbt", "tabpfn"],
+        help=f"Model family for regressor/classifier (default: {DEFAULT_MODEL_TYPE}).",
+    )
+    parser.add_argument(
         "--ratio-coverage",
         type=float,
         default=DEFAULT_RATIO_COVERAGE,
@@ -801,6 +904,16 @@ def main() -> int:
         "--llm-model-path",
         default=DEFAULT_LLM_MODEL_PATH,
         help=f"Local LLM model path for automatic feature semantics (default: {DEFAULT_LLM_MODEL_PATH})",
+    )
+    parser.add_argument(
+        "--feature-semantic-cache",
+        default=DEFAULT_FEATURE_SEMANTIC_CACHE,
+        help=f"Cache file for LLM feature semantics (default: {DEFAULT_FEATURE_SEMANTIC_CACHE}).",
+    )
+    parser.add_argument(
+        "--refresh-feature-semantic-cache",
+        action="store_true",
+        help="Ignore existing feature semantic cache and rerun LLM profiling.",
     )
     parser.add_argument(
         "--disable-llm-feature-profiler",
@@ -982,13 +1095,24 @@ def main() -> int:
 
     llm_used = False
     llm_mode = "heuristic"
+    llm_cache_used = False
     llm_summary = {
         "dropped_id_like_cols": 0,
         "datetime_expanded_cols": 0,
         "year_transformed_cols": 0,
     }
     feature_semantic_decisions: Dict[str, Dict[str, Any]] = {}
-    if not args.disable_llm_feature_profiler:
+    semantic_cache_path = Path(args.feature_semantic_cache)
+    semantic_fingerprint = build_semantic_cache_fingerprint(train_df, test_df, feature_cols)
+
+    if not args.refresh_feature_semantic_cache:
+        cached_decisions = load_semantic_cache(semantic_cache_path, semantic_fingerprint)
+        if cached_decisions:
+            feature_semantic_decisions = cached_decisions
+            llm_mode = "cache"
+            llm_cache_used = True
+
+    if (not feature_semantic_decisions) and (not args.disable_llm_feature_profiler):
         try:
             model_path = Path(args.llm_model_path)
             if model_path.exists():
@@ -1003,6 +1127,7 @@ def main() -> int:
                 )
                 llm_used = True
                 llm_mode = "llm"
+                save_semantic_cache(semantic_cache_path, semantic_fingerprint, feature_semantic_decisions)
             else:
                 print(
                     f"[WARN] LLM model path not found: {model_path}. "
@@ -1110,6 +1235,7 @@ def main() -> int:
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Correction regressor (validation)",
+        model_type=args.model_type,
     )
     x_val_corr_t = corr_pre_val.transform(x_val)
     corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1138,6 +1264,7 @@ def main() -> int:
             categorical_cols=categorical_cols,
             n_estimators=args.n_estimators,
             prefix=f"Correction gate classifier (validation, q={q:.2f})",
+            model_type=args.model_type,
         )
         x_val_gate_t = gate_pre_cand.transform(x_val)
         gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -1232,6 +1359,7 @@ def main() -> int:
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Correction regressor (final)",
+        model_type=args.model_type,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -1242,6 +1370,7 @@ def main() -> int:
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Correction gate classifier (final)",
+        model_type=args.model_type,
     )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -1288,8 +1417,11 @@ def main() -> int:
     print(f"Target column: {target_col}")
     print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
+    print(f"Model type: {args.model_type}")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
+    print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
+    print(f"Feature semantic cache file: {semantic_cache_path}")
     print(f"Dropped id-like columns: {llm_summary['dropped_id_like_cols']}")
     print(f"Datetime-expanded columns: {llm_summary['datetime_expanded_cols']}")
     print(f"Year-transformed columns: {llm_summary['year_transformed_cols']}")
