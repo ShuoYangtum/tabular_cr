@@ -1,0 +1,52 @@
+(gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
+[WARN] LLM feature profiling failed, fallback to heuristic: Using a `device_map`, `tp_plan`, `torch.device` context manager or setting `torch.set_default_device(device)` requires `accelerate`. You can install it with `pip install accelerate`
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:263: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+  dt = pd.to_datetime(series, errors="coerce", utc=True)
+/home/yangsext/tabular/train_and_generate.py:437: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__month"] = dt.dt.month
+/home/yangsext/tabular/train_and_generate.py:438: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__day"] = dt.dt.day
+/home/yangsext/tabular/train_and_generate.py:439: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__hour"] = dt.dt.hour
+/home/yangsext/tabular/train_and_generate.py:440: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__weekday"] = dt.dt.weekday
+/home/yangsext/tabular/train_and_generate.py:437: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__month"] = dt.dt.month
+/home/yangsext/tabular/train_and_generate.py:438: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__day"] = dt.dt.day
+/home/yangsext/tabular/train_and_generate.py:439: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__hour"] = dt.dt.hour
+/home/yangsext/tabular/train_and_generate.py:440: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  df[f"{col}__weekday"] = dt.dt.weekday
