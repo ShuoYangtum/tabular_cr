@@ -1,349 +1,11 @@
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
-Loading weights: 100%|███████████████████████████████████████████████████████████████████████████████| 398/398 [00:00<00:00, 8429.91it/s]
+Loading weights: 100%|███████████████████████████████████████████████████████████████████████████████| 398/398 [00:00<00:00, 9866.44it/s]
 The following generation flags are not valid and may be ignored: ['top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
 LLM feature profiling: [##############################] 43/43
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage1 bin classifier (validation): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage1 under/over classifier (validation): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage2 ratio regressor (validation): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage1 bin classifier (final): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage1 under/over classifier (final): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
-Stage2 ratio regressor (final): [##############################] 300/300
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/impute/_base.py:577: UserWarning: Skipping features without any observed values: ['steuerungs-daten__datum-erfassung__year'
- 'steuerungs-daten__datum-erfassung__month'
- 'steuerungs-daten__datum-erfassung__day'
- 'steuerungs-daten__datum-erfassung__hour'
- 'steuerungs-daten__datum-erfassung__weekday'
- 'steuerungs-daten__datum-letzte-auskunft__year'
- 'steuerungs-daten__datum-letzte-auskunft__month'
- 'steuerungs-daten__datum-letzte-auskunft__day'
- 'steuerungs-daten__datum-letzte-auskunft__hour'
- 'steuerungs-daten__datum-letzte-auskunft__weekday'
- 'steuerungs-daten__datum-letzte-recherche__year'
- 'steuerungs-daten__datum-letzte-recherche__month'
- 'steuerungs-daten__datum-letzte-recherche__day'
- 'steuerungs-daten__datum-letzte-recherche__hour'
- 'steuerungs-daten__datum-letzte-recherche__weekday'
- 'steuerungs-daten__datum-vorraetig-bis__year'
- 'steuerungs-daten__datum-vorraetig-bis__month'
- 'steuerungs-daten__datum-vorraetig-bis__day'
- 'steuerungs-daten__datum-vorraetig-bis__hour'
- 'steuerungs-daten__datum-vorraetig-bis__weekday']. At least one non-missing value is needed for imputation with strategy='median'.
-  warnings.warn(
+Correction regressor (validation): [##############################] 300/300
+Correction gate classifier (validation): [##############################] 300/300
+Correction regressor (final): [##############################] 300/300
+Correction gate classifier (final): [##############################] 300/300
 === Training Summary ===
 Train file: ../modified/train_clean.csv
 Test file: ../modified/test_clean.csv
@@ -356,8 +18,10 @@ LLM profiling used: yes
 Dropped id-like columns: 0
 Datetime-expanded columns: 8
 Year-transformed columns: 3
-Stage1 target bins requested: 10
-Stage1 target bins used (validation/final): 10/10
+Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+Best alpha (validation): 1.0
+Gate quantile: 0.6
+Gate threshold |corr_log| (validation/final): 2.424731/2.427443
 Ratio coverage: 95.00%
 Ratio clip range (validation): [0.000814, 24.142857]
 Ratio clip range (final): [0.000563, 23.507128]
@@ -368,40 +32,41 @@ Dropped rows (invalid baseline): 0
 Dropped rows (baseline approximately zero): 222
 Dropped rows (invalid target/baseline ratio): 222
 Dropped rows (invalid target/baseline union): 222
-Feature count: 78
-Numeric features: 66
+Feature count: 56
+Numeric features: 44
 Categorical features: 12
+Dropped feature cols (sparse/constant): 20/2
 Test file contains target column: yes (excluded from features)
+Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
 
 === Holdout Metrics (20% validation split) ===
-Stage1 bin accuracy : 0.475892
-Stage1 under/over accuracy : 0.830933
+Gate accuracy : 0.804634
 ---
 Baseline MAE  : 1302061.954890
 Baseline RMSE : 16069673.099473
 Baseline R2   : 0.005419
 ---
-MAE  : 2692744.324602
-RMSE : 29353257.351542
-R2   : -2.318476
+MAE  : 1205510.650545
+RMSE : 15189388.147894
+R2   : 0.111399
 
 Prediction complete. New file written with generated column.
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
 === Data Cleaning Summary ===
 File: generated.csv
 Total rows: 2759
-Used rows: 2759
-Dropped rows: 0
+Used rows: 2687
+Dropped rows: 72
 Rows with invalid target: 0
-Rows with invalid generated: 0
+Rows with invalid generated: 72
 
 === Error Metrics (target=true, generated=pred) ===
-MAE            : 3926960.735463
-MSE            : 1524317696338434.500000
-RMSE           : 39042511.398967
-MedianAE       : 263.935189
-Bias(mean err) : -585600.965346
-MAPE(%)        : 7201.519810
-sMAPE(%)       : 189.032304
-R2             : -0.432879
+MAE            : 2921610.777906
+MSE            : 878945778497486.125000
+RMSE           : 29647019.723700
+MedianAE       : 202.853113
+Bias(mean err) : -2747181.382523
+MAPE(%)        : 17614.689636
+sMAPE(%)       : 97.599188
+R2             : 0.063670
 (gptq) [yangsext@tux100p700 ~/tabular]# 
