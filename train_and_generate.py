@@ -160,14 +160,16 @@ def infer_feature_types(df: pd.DataFrame, threshold: float) -> Tuple[List[str], 
 def apply_feature_cleaning(
     df: pd.DataFrame, numeric_cols: List[str], categorical_cols: List[str]
 ) -> pd.DataFrame:
-    out = pd.DataFrame(index=df.index)
+    cleaned_cols: Dict[str, pd.Series] = {}
     for col in numeric_cols:
-        out[col] = df[col].map(extract_numeric)
+        s = df[col].map(extract_numeric)
         # Replace any residual infinities to avoid sklearn finite-value checks.
-        out[col] = out[col].replace([np.inf, -np.inf], np.nan)
+        s = s.replace([np.inf, -np.inf], np.nan)
+        cleaned_cols[col] = s
     for col in categorical_cols:
-        out[col] = df[col].map(clean_categorical)
-    return out
+        cleaned_cols[col] = df[col].map(clean_categorical)
+    # Build once to avoid DataFrame fragmentation from repeated column inserts.
+    return pd.DataFrame(cleaned_cols, index=df.index).copy()
 
 
 def load_csv(path: Path) -> pd.DataFrame:
