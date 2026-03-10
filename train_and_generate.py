@@ -31,6 +31,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -471,6 +472,8 @@ def main() -> int:
     x_val_bin_t = stage1_bin_pre_val.transform(x_val)
     stage1_bin_pred_tr = stage1_bin_model_val.predict(x_tr_bin_t)
     stage1_bin_pred_val = stage1_bin_model_val.predict(x_val_bin_t)
+    y_bin_val = assign_bins(y_tar_val, bin_edges_val)
+    stage1_bin_acc_val = float(accuracy_score(y_bin_val, stage1_bin_pred_val))
 
     # ----- Stage 1 (validation): over/under classifier -----
     # 1 -> baseline underestimates target, 0 -> baseline overestimates/equal
@@ -487,6 +490,8 @@ def main() -> int:
     x_val_ud_t = stage1_ud_pre_val.transform(x_val)
     stage1_ud_pred_tr = stage1_ud_model_val.predict(x_tr_ud_t)
     stage1_ud_pred_val = stage1_ud_model_val.predict(x_val_ud_t)
+    y_under_val = (base_val < y_tar_val).astype(int)
+    stage1_under_acc_val = float(accuracy_score(y_under_val, stage1_ud_pred_val))
 
     # ----- Stage 2 (validation): ratio regression with stage-1 outputs -----
     x_tr_stage2 = x_tr.copy()
@@ -630,6 +635,9 @@ def main() -> int:
     print()
 
     print("=== Holdout Metrics (20% validation split) ===")
+    print(f"Stage1 bin accuracy : {stage1_bin_acc_val:.6f}")
+    print(f"Stage1 under/over accuracy : {stage1_under_acc_val:.6f}")
+    print("---")
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
     print(f"Baseline RMSE : {fmt(baseline_val_rmse)}")
     print(f"Baseline R2   : {fmt(baseline_val_r2)}")
