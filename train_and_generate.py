@@ -790,19 +790,57 @@ def configure_tabpfn_runtime(disable_telemetry: bool = True) -> None:
     os.environ.setdefault("DO_NOT_TRACK", "1")
 
 
-def resolve_tabpfn_device(device_setting: str) -> str:
-    d = str(device_setting).strip().lower()
-    if d not in {"auto", "cpu", "cuda"}:
-        raise ValueError(f"Invalid tabpfn device: {device_setting}")
-    if d in {"cpu", "cuda"}:
-        return d
-    # auto
+def resolve_tabpfn_device(device_setting: str) -> str | list[str]:
+    raw = str(device_setting).strip()
+    d = raw.lower()
+    if d == "auto":
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    if d == "cpu" or d == "mps" or d.startswith("cuda"):
+        return raw
+    if "," in raw:
+        devices = [p.strip() for p in raw.split(",") if p.strip()]
+        if devices and all(p.lower().startswith("cuda") for p in devices):
+            return devices
+    raise ValueError(
+        "Invalid tabpfn device. Use auto/cpu/cuda/cuda:0 or comma-separated cuda devices."
+    )
+
+
+def get_torch_cuda_runtime_info() -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "torch_import_ok": False,
+        "torch_version": None,
+        "cuda_compiled_version": None,
+        "cuda_available": False,
+        "cuda_device_count": 0,
+        "cuda_devices": [],
+    }
     try:
         import torch
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        info["torch_import_ok"] = True
+        info["torch_version"] = getattr(torch, "__version__", None)
+        info["cuda_compiled_version"] = getattr(torch.version, "cuda", None)
+        cuda_ok = bool(torch.cuda.is_available())
+        info["cuda_available"] = cuda_ok
+        if cuda_ok:
+            n = int(torch.cuda.device_count())
+            info["cuda_device_count"] = n
+            names: List[str] = []
+            for i in range(n):
+                try:
+                    names.append(str(torch.cuda.get_device_name(i)))
+                except Exception:
+                    names.append(f"cuda:{i}")
+            info["cuda_devices"] = names
     except Exception:
-        return "cpu"
+        return info
+    return info
 
 
 def drop_high_unique_id_like_features(
@@ -999,9 +1037,9 @@ def main() -> int:
     parser.add_argument(
         "--tabpfn-device",
         default=DEFAULT_TABPFN_DEVICE,
-        choices=["auto", "cpu", "cuda"],
         help=(
-            "TabPFN compute device. auto chooses cuda when available, else cpu "
+            "TabPFN compute device. Supports auto/cpu/cuda/cuda:0/"
+            "cuda:0,cuda:1. auto chooses cuda when available, else cpu "
             f"(default: {DEFAULT_TABPFN_DEVICE})."
         ),
     )
@@ -1200,8 +1238,17 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERROR] Invalid --tabpfn-device: {exc}")
         return 1
-    if args.model_type == "tabpfn" and args.tabpfn_device == "cuda" and resolved_tabpfn_device != "cuda":
-        print("[ERROR] --tabpfn-device=cuda requested but CUDA is not available.")
+    torch_cuda_info = get_torch_cuda_runtime_info()
+    wants_cuda = False
+    if isinstance(resolved_tabpfn_device, list):
+        wants_cuda = any(str(d).lower().startswith("cuda") for d in resolved_tabpfn_device)
+    else:
+        wants_cuda = str(resolved_tabpfn_device).lower().startswith("cuda")
+    if args.model_type == "tabpfn" and wants_cuda and not bool(torch_cuda_info.get("cuda_available", False)):
+        print("[ERROR] CUDA device requested for TabPFN but torch.cuda.is_available() is False.")
+        print(
+            "Check whether your environment has GPU-enabled PyTorch installed and visible NVIDIA drivers."
+        )
         return 1
     tabpfn_reg_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_reg_model_path, task="reg")
     tabpfn_clf_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_clf_model_path, task="clf")
@@ -1640,6 +1687,16 @@ def main() -> int:
         print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
         print(f"TabPFN device (requested/resolved): {args.tabpfn_device}/{resolved_tabpfn_device}")
         print("TabPFN telemetry: disabled")
+        print(
+            "Torch CUDA runtime: "
+            f"import_ok={torch_cuda_info.get('torch_import_ok')}, "
+            f"torch={torch_cuda_info.get('torch_version')}, "
+            f"built_with_cuda={torch_cuda_info.get('cuda_compiled_version')}, "
+            f"cuda_available={torch_cuda_info.get('cuda_available')}, "
+            f"cuda_device_count={torch_cuda_info.get('cuda_device_count')}"
+        )
+        if torch_cuda_info.get("cuda_devices"):
+            print(f"CUDA devices: {torch_cuda_info.get('cuda_devices')}")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
     print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
