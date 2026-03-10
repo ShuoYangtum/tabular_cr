@@ -1,111 +1,105 @@
-(running log)
-Correction regressor (final): [##############################] 300/300
-Correction gate classifier (final): [##############################] 300/300
-=== Training Summary ===
-Train file: ../modified/train_3_clean.csv
-Test file: ../modified/test_3_clean.csv
-Output file: generated.csv
-Target column: esg_firma_esg-bewertung__input__wasserverbrauch-m3
-Baseline column: esg_firma_wasser_berechnet
-Generated column: generated
-Feature semantics mode: llm
-LLM profiling used: yes
-Dropped id-like columns: 19
-Datetime-expanded columns: 19
-Year-transformed columns: 12
-Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-Best alpha (validation): 1.0
-Segmented alpha used: yes
-Baseline alpha bins: 10, min bin rows: 80
-Tuning objective: hybrid
-Validation relative gain: 0.253683
-Fallback to baseline correction: no
-Gate quantile selected: 0.5
-Gate threshold |corr_log| (validation/final): 1.789409/1.793423
-Ratio coverage: 95.00%
-Ratio clip range (validation): [0.000814, 24.142857]
-Ratio clip range (final): [0.000563, 23.507128]
-Original train rows: 8206
-Valid train rows used: 7984
-Dropped rows (invalid target): 0
-Dropped rows (invalid baseline): 0
-Dropped rows (baseline approximately zero): 222
-Dropped rows (invalid target/baseline ratio): 222
-Dropped rows (invalid target/baseline union): 222
-Feature count: 470
-Numeric features: 350
-Categorical features: 120
-Dropped feature cols (sparse/constant): 102/53
-Dropped feature cols (high-unique id-like): 0
-Test file contains target column: yes (excluded from features)
-Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
+(gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
+Correction regressor (validation): [------------------------------] 0/1HuggingFace download failed.
+Traceback (most recent call last):
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpcore/_sync/http_proxy.py", line 297, in handle_request
+    raise ProxyError(msg)
+httpcore.ProxyError: 403 Forbidden
 
-=== Holdout Metrics (20% validation split) ===
-Gate accuracy : 0.988729
----
-Baseline MAE  : 1302061.954890
-Baseline RMSE : 16069673.099473
-Baseline R2   : 0.005419
-Baseline TrimmedRMSE90 : 78988.335263
----
-MAE  : 943979.304179
-RMSE : 12021173.165774
-R2   : 0.443430
-TrimmedRMSE90 : 16801.038221
+The above exception was the direct cause of the following exception:
 
-Prediction complete. New file written with generated column.
-
-(testing results)
-baseline-target
-MAE            : 3254557.031403
-MSE            : 1005331687447731.250000
-RMSE           : 31706965.913624
-MedianAE       : 1051.000000
-P90AE          : 127073.200000
-P95AE          : 857420.800000
-TrimmedMAE90   : 24218.008946
-TrimmedRMSE90  : 93195.812812
-Bias(mean err) : -3060442.728539
-MAPE(%)        : 22622.506531
-MdAPE(%)       : 167.790148
-sMAPE(%)       : 123.399773
-WAPE(%)        : 97.437641
-nMAE/med(|y|)  : 17129.247534
-R2             : 0.054975
-
-ours-target
-MAE            : 2341669.298486
-MSE            : 574688504132293.625000
-RMSE           : 23972661.598836
-MedianAE       : 49.502517
-P90AE          : 28958.534534
-P95AE          : 243086.100021
-TrimmedMAE90   : 6185.580718
-TrimmedRMSE90  : 26808.462762
-Bias(mean err) : -1652408.679237
-MAPE(%)        : 79.687517
-MdAPE(%)       : 33.258611
-sMAPE(%)       : 50.630034
-WAPE(%)        : 77.398596
-nMAE/med(|y|)  : 11708.346492
-R2             : 0.387792
-
-(some issues)
-(gptq) [yangsext@tux100p700 ~/tabular]# python3 analyze_feature_signal_drift.py
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
-  return spearmanr(a, b)[0]
-Done.
-Output: feature_signal_drift_report.csv
-Features analyzed: 556
+Traceback (most recent call last):
+  File "/home/yangsext/tabular/train_and_generate.py", line 1596, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 1280, in main
+    corr_pre_val, corr_model_val = fit_gbdt_with_progress(
+                                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 605, in fit_gbdt_with_progress
+    model.fit(x_train_t, y_train)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 320, in wrapper
+    return _safe_call_with_telemetry(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 364, in _safe_call_with_telemetry
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/regressor.py", line 755, in fit
+    byte_size, rng = self._initialize_model_variables()
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/regressor.py", line 585, in _initialize_model_variables
+    return initialize_model_variables_helper(self, self.estimator_type)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/base.py", line 381, in initialize_model_variables_helper
+    initialize_tabpfn_model(
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/base.py", line 199, in initialize_tabpfn_model
+    load_model_criterion_config(
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/model_loading.py", line 598, in load_model_criterion_config
+    raise res[0]
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/model_loading.py", line 439, in _download_model
+    _try_huggingface_downloads(to, model_source, model_name, suppress_warnings=True)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/model_loading.py", line 220, in _try_huggingface_downloads
+    local_path = hf_hub_download(
+                 ^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 89, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 965, in hf_hub_download
+    return _hf_hub_download_to_local_dir(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1274, in _hf_hub_download_to_local_dir
+    (url_to_download, etag, commit_hash, expected_size, xet_file_data, head_call_error) = _get_metadata_or_catch_error(
+                                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1653, in _get_metadata_or_catch_error
+    metadata = get_hf_file_metadata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/utils/_validators.py", line 89, in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/file_download.py", line 1576, in get_hf_file_metadata
+    response = _httpx_follow_relative_redirects_with_backoff(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 685, in _httpx_follow_relative_redirects_with_backoff
+    response = http_backoff(
+               ^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 559, in http_backoff
+    return next(
+           ^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 467, in _http_backoff_base
+    response = client.request(method=method, url=url, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/contextlib.py", line 155, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ProxyError: 403 Forbidden
+error uploading: HTTPSConnectionPool(host='eu.i.posthog.com', port=443): Max retries exceeded with url: /batch/ (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))
+(gptq) [yangsext@tux100p700 ~/tabular]# 
