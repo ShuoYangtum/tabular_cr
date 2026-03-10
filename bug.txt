@@ -1,9 +1,12 @@
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
-Loading weights: 100%|███████████████████████████████████████████████████████████████████████████████| 398/398 [00:00<00:00, 9866.44it/s]
+Loading weights: 100%|████████████████████████████████████████████████████████████████████| 398/398 [00:00<00:00, 8952.58it/s]
 The following generation flags are not valid and may be ignored: ['top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
 LLM feature profiling: [##############################] 43/43
 Correction regressor (validation): [##############################] 300/300
-Correction gate classifier (validation): [##############################] 300/300
+Correction gate classifier (validation, q=0.50): [##############################] 300/300
+Correction gate classifier (validation, q=0.60): [##############################] 300/300
+Correction gate classifier (validation, q=0.70): [##############################] 300/300
+Correction gate classifier (validation, q=0.80): [##############################] 300/300
 Correction regressor (final): [##############################] 300/300
 Correction gate classifier (final): [##############################] 300/300
 === Training Summary ===
@@ -20,8 +23,10 @@ Datetime-expanded columns: 8
 Year-transformed columns: 3
 Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 Best alpha (validation): 1.0
-Gate quantile: 0.6
-Gate threshold |corr_log| (validation/final): 2.424731/2.427443
+Segmented alpha used: yes
+Baseline alpha bins: 10, min bin rows: 80
+Gate quantile selected: 0.5
+Gate threshold |corr_log| (validation/final): 1.789409/1.793423
 Ratio coverage: 95.00%
 Ratio clip range (validation): [0.000814, 24.142857]
 Ratio clip range (final): [0.000563, 23.507128]
@@ -36,21 +41,23 @@ Feature count: 56
 Numeric features: 44
 Categorical features: 12
 Dropped feature cols (sparse/constant): 20/2
+Dropped feature cols (high-unique id-like): 0
 Test file contains target column: yes (excluded from features)
 Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
 
 === Holdout Metrics (20% validation split) ===
-Gate accuracy : 0.804634
+Gate accuracy : 0.817783
 ---
 Baseline MAE  : 1302061.954890
 Baseline RMSE : 16069673.099473
 Baseline R2   : 0.005419
 ---
-MAE  : 1205510.650545
-RMSE : 15189388.147894
-R2   : 0.111399
+MAE  : 1149128.978272
+RMSE : 15006322.525871
+R2   : 0.132690
 
 Prediction complete. New file written with generated column.
+
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
 === Data Cleaning Summary ===
 File: generated.csv
@@ -61,12 +68,19 @@ Rows with invalid target: 0
 Rows with invalid generated: 72
 
 === Error Metrics (target=true, generated=pred) ===
-MAE            : 2921610.777906
-MSE            : 878945778497486.125000
-RMSE           : 29647019.723700
-MedianAE       : 202.853113
-Bias(mean err) : -2747181.382523
-MAPE(%)        : 17614.689636
-sMAPE(%)       : 97.599188
-R2             : 0.063670
+MAE            : 2920229.933806
+MSE            : 883135987149551.750000
+RMSE           : 29717603.994090
+MedianAE       : 216.080693
+P90AE          : 66141.930286
+P95AE          : 563791.866107
+TrimmedMAE90   : 14446.607749
+TrimmedRMSE90  : 61818.192352
+Bias(mean err) : -2717371.733933
+MAPE(%)        : 17105.634638
+MdAPE(%)       : 88.163489
+sMAPE(%)       : 97.152228
+WAPE(%)        : 96.521613
+nMAE/med(|y|)  : 14601.149669
+R2             : 0.059207
 (gptq) [yangsext@tux100p700 ~/tabular]# 
