@@ -62,6 +62,8 @@ DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
 DEFAULT_GATE_QUANTILE_CANDIDATES = "0.5,0.6,0.7,0.8"
+DEFAULT_TUNE_OBJECTIVE = "hybrid"
+DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -586,6 +588,37 @@ def parse_float_list(text: str) -> List[float]:
     return [float(p) for p in parts]
 
 
+def trimmed_mean(arr: np.ndarray, trim_ratio: float) -> float:
+    if len(arr) == 0:
+        return np.nan
+    if not (0 <= trim_ratio < 0.5):
+        raise ValueError("trim_ratio must be in [0, 0.5).")
+    lo = int(len(arr) * trim_ratio)
+    hi = len(arr) - lo
+    if hi <= lo:
+        return np.nan
+    arr_sorted = np.sort(arr)
+    return float(np.mean(arr_sorted[lo:hi]))
+
+
+def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    err = y_pred - y_true
+    mae = float(mean_absolute_error(y_true, y_pred))
+    rmse = float(math.sqrt(mean_squared_error(y_true, y_pred)))
+    r2 = float(r2_score(y_true, y_pred)) if len(y_true) >= 2 else np.nan
+    trimmed_rmse90 = float(np.sqrt(trimmed_mean(err**2, 0.05)))
+    return {"mae": mae, "rmse": rmse, "r2": r2, "trimmed_rmse90": trimmed_rmse90}
+
+
+def objective_value(metrics: Dict[str, float], objective: str) -> float:
+    if objective == "rmse":
+        return float(metrics["rmse"])
+    if objective == "trimmed_rmse90":
+        return float(metrics["trimmed_rmse90"])
+    # hybrid objective
+    return float(0.6 * metrics["rmse"] + 0.4 * metrics["trimmed_rmse90"])
+
+
 def drop_high_unique_id_like_features(
     x_train: pd.DataFrame,
     x_test: pd.DataFrame,
@@ -625,24 +658,24 @@ def pick_best_alpha(
     alpha_candidates: List[float],
     ratio_lower: float,
     ratio_upper: float,
+    objective: str,
 ) -> Tuple[float, Dict[str, float]]:
     base_slog = signed_log1p(base)
     best_alpha = alpha_candidates[0]
-    best_rmse = float("inf")
-    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan}
+    best_score = float("inf")
+    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan, "trimmed_rmse90": np.nan}
     for alpha in alpha_candidates:
         y_slog_pred = base_slog + alpha * gate_prob * corr_pred
         y_pred = signed_expm1(y_slog_pred)
         y_ratio_pred = y_pred / base
         y_ratio_pred = np.clip(y_ratio_pred, ratio_lower, ratio_upper)
         y_pred = base * y_ratio_pred
-        mae = mean_absolute_error(y_true, y_pred)
-        rmse = math.sqrt(mean_squared_error(y_true, y_pred))
-        r2 = r2_score(y_true, y_pred) if len(y_true) >= 2 else np.nan
-        if rmse < best_rmse:
-            best_rmse = rmse
+        metrics = evaluate_predictions(y_true, y_pred)
+        score = objective_value(metrics, objective)
+        if score < best_score:
+            best_score = score
             best_alpha = alpha
-            best_metrics = {"mae": mae, "rmse": rmse, "r2": r2}
+            best_metrics = metrics
     return best_alpha, best_metrics
 
 
@@ -656,6 +689,7 @@ def fit_segmented_alpha(
     ratio_upper: float,
     n_bins: int,
     min_bin_rows: int,
+    objective: str,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     edges = make_adaptive_bins(base, n_bins)
     bin_idx = assign_bins(base, edges)
@@ -667,6 +701,7 @@ def fit_segmented_alpha(
         alpha_candidates=alpha_candidates,
         ratio_lower=ratio_lower,
         ratio_upper=ratio_upper,
+        objective=objective,
     )
 
     alpha_by_bin = np.full(len(edges) - 1, default_alpha, dtype=float)
@@ -682,6 +717,7 @@ def fit_segmented_alpha(
             alpha_candidates=alpha_candidates,
             ratio_lower=ratio_lower,
             ratio_upper=ratio_upper,
+            objective=objective,
         )
         alpha_by_bin[b] = best_a
 
@@ -690,10 +726,8 @@ def fit_segmented_alpha(
     pred_ratio = pred / base
     pred_ratio = np.clip(pred_ratio, ratio_lower, ratio_upper)
     pred = base * pred_ratio
-    mae = float(mean_absolute_error(y_true, pred))
-    rmse = float(math.sqrt(mean_squared_error(y_true, pred)))
-    r2 = float(r2_score(y_true, pred)) if len(y_true) >= 2 else np.nan
-    return edges, alpha_by_bin, {"mae": mae, "rmse": rmse, "r2": r2}
+    metrics = evaluate_predictions(y_true, pred)
+    return edges, alpha_by_bin, metrics
 
 
 def drop_sparse_or_constant_features(
@@ -828,6 +862,21 @@ def main() -> int:
         help=f"Minimum validation rows to tune alpha per bin (default: {DEFAULT_MIN_BIN_ROWS}).",
     )
     parser.add_argument(
+        "--tune-objective",
+        default=DEFAULT_TUNE_OBJECTIVE,
+        choices=["rmse", "trimmed_rmse90", "hybrid"],
+        help=f"Validation tuning objective (default: {DEFAULT_TUNE_OBJECTIVE}).",
+    )
+    parser.add_argument(
+        "--min-validation-rel-gain",
+        type=float,
+        default=DEFAULT_MIN_VALIDATION_REL_GAIN,
+        help=(
+            "Minimum relative objective improvement over baseline required to apply correction "
+            f"(default: {DEFAULT_MIN_VALIDATION_REL_GAIN})."
+        ),
+    )
+    parser.add_argument(
         "--min-feature-non-null-ratio",
         type=float,
         default=DEFAULT_MIN_FEATURE_NON_NULL_RATIO,
@@ -868,6 +917,9 @@ def main() -> int:
         return 1
     if args.min_bin_rows <= 0:
         print("[ERROR] --min-bin-rows must be positive.")
+        return 1
+    if args.min_validation_rel_gain < 0:
+        print("[ERROR] --min-validation-rel-gain must be >= 0.")
         return 1
     if not (0.0 <= args.min_feature_non_null_ratio < 1.0):
         print("[ERROR] --min-feature-non-null-ratio must be in [0, 1).")
@@ -1066,6 +1118,7 @@ def main() -> int:
     baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
     baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
     baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
+    baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
 
     if args.disable_auto_gate_quantile:
         q_candidates = [args.gate_quantile]
@@ -1105,6 +1158,7 @@ def main() -> int:
             alpha_candidates=alpha_candidates,
             ratio_lower=ratio_lower_val,
             ratio_upper=ratio_upper_val,
+            objective=args.tune_objective,
         )
 
         # Segmented alpha by baseline bins
@@ -1118,14 +1172,17 @@ def main() -> int:
             ratio_upper=ratio_upper_val,
             n_bins=args.baseline_alpha_bins,
             min_bin_rows=args.min_bin_rows,
+            objective=args.tune_objective,
         )
 
-        use_segment = metrics_segment["rmse"] < metrics_global["rmse"]
+        use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
+            metrics_global, args.tune_objective
+        )
         selected_metrics = metrics_segment if use_segment else metrics_global
-        selected_rmse = float(selected_metrics["rmse"])
+        selected_score = objective_value(selected_metrics, args.tune_objective)
 
-        if selected_rmse < best_val_rmse:
-            best_val_rmse = selected_rmse
+        if selected_score < best_val_rmse:
+            best_val_rmse = selected_score
             best_val_package = {
                 "q": q,
                 "gate_thr": gate_thr_cand,
@@ -1139,6 +1196,7 @@ def main() -> int:
                 "metrics_global": metrics_global,
                 "metrics_segment": metrics_segment,
                 "metrics_selected": selected_metrics,
+                "selected_score": selected_score,
             }
 
     selected_gate_quantile = float(best_val_package["q"])
@@ -1151,6 +1209,19 @@ def main() -> int:
     val_mae = float(best_val_package["metrics_selected"]["mae"])
     val_rmse = float(best_val_package["metrics_selected"]["rmse"])
     val_r2 = float(best_val_package["metrics_selected"]["r2"])
+    val_trimmed_rmse90 = float(best_val_package["metrics_selected"]["trimmed_rmse90"])
+
+    baseline_objective = objective_value(baseline_val_metrics, args.tune_objective)
+    selected_objective = float(best_val_package["selected_score"])
+    rel_gain = (baseline_objective - selected_objective) / max(abs(baseline_objective), 1e-12)
+    fallback_to_baseline = rel_gain < args.min_validation_rel_gain
+    if fallback_to_baseline:
+        best_alpha = 0.0
+        use_segment_alpha = False
+        val_mae = float(baseline_val_metrics["mae"])
+        val_rmse = float(baseline_val_metrics["rmse"])
+        val_r2 = float(baseline_val_metrics["r2"])
+        val_trimmed_rmse90 = float(baseline_val_metrics["trimmed_rmse90"])
 
     # ----- Final full-train models -----
     y_corr_full = signed_log1p(y_train_target) - signed_log1p(baseline_train)
@@ -1226,6 +1297,9 @@ def main() -> int:
     print(f"Best alpha (validation): {best_alpha}")
     print(f"Segmented alpha used: {'yes' if use_segment_alpha else 'no'}")
     print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
+    print(f"Tuning objective: {args.tune_objective}")
+    print(f"Validation relative gain: {rel_gain:.6f}")
+    print(f"Fallback to baseline correction: {'yes' if fallback_to_baseline else 'no'}")
     print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
@@ -1274,10 +1348,12 @@ def main() -> int:
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
     print(f"Baseline RMSE : {fmt(baseline_val_rmse)}")
     print(f"Baseline R2   : {fmt(baseline_val_r2)}")
+    print(f"Baseline TrimmedRMSE90 : {fmt(baseline_val_metrics['trimmed_rmse90'])}")
     print("---")
     print(f"MAE  : {fmt(val_mae)}")
     print(f"RMSE : {fmt(val_rmse)}")
     print(f"R2   : {fmt(val_r2)}")
+    print(f"TrimmedRMSE90 : {fmt(val_trimmed_rmse90)}")
     print()
     print("Prediction complete. New file written with generated column.")
     return 0
