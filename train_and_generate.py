@@ -59,6 +59,9 @@ DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
 DEFAULT_GATE_QUANTILE = 0.6
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
+DEFAULT_BASELINE_ALPHA_BINS = 10
+DEFAULT_MIN_BIN_ROWS = 80
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.5,0.6,0.7,0.8"
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -576,6 +579,123 @@ def parse_alpha_grid(grid_text: str) -> List[float]:
     return out
 
 
+def parse_float_list(text: str) -> List[float]:
+    parts = [p.strip() for p in str(text).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("float list is empty")
+    return [float(p) for p in parts]
+
+
+def drop_high_unique_id_like_features(
+    x_train: pd.DataFrame,
+    x_test: pd.DataFrame,
+    unique_ratio_threshold: float = 0.98,
+    min_non_null_rows: int = 200,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    id_hints = ("id", "uuid", "guid", "key", "nummer", "crefonummer", "timestamp", "zeitpunkt")
+    keep_cols: List[str] = []
+    dropped_id_like = 0
+
+    for col in x_train.columns:
+        s = x_train[col]
+        non_null = int(s.notna().sum())
+        if non_null < min_non_null_rows:
+            keep_cols.append(col)
+            continue
+        uniq_ratio = float(s.nunique(dropna=True) / max(non_null, 1))
+        col_low = col.lower()
+        has_hint = any(h in col_low for h in id_hints)
+        if uniq_ratio >= unique_ratio_threshold and has_hint:
+            dropped_id_like += 1
+            continue
+        keep_cols.append(col)
+
+    return (
+        x_train[keep_cols].copy(),
+        x_test[keep_cols].copy(),
+        {"dropped_high_unique_id_like_cols": dropped_id_like},
+    )
+
+
+def pick_best_alpha(
+    y_true: np.ndarray,
+    base: np.ndarray,
+    corr_pred: np.ndarray,
+    gate_prob: np.ndarray,
+    alpha_candidates: List[float],
+    ratio_lower: float,
+    ratio_upper: float,
+) -> Tuple[float, Dict[str, float]]:
+    base_slog = signed_log1p(base)
+    best_alpha = alpha_candidates[0]
+    best_rmse = float("inf")
+    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan}
+    for alpha in alpha_candidates:
+        y_slog_pred = base_slog + alpha * gate_prob * corr_pred
+        y_pred = signed_expm1(y_slog_pred)
+        y_ratio_pred = y_pred / base
+        y_ratio_pred = np.clip(y_ratio_pred, ratio_lower, ratio_upper)
+        y_pred = base * y_ratio_pred
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = math.sqrt(mean_squared_error(y_true, y_pred))
+        r2 = r2_score(y_true, y_pred) if len(y_true) >= 2 else np.nan
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_alpha = alpha
+            best_metrics = {"mae": mae, "rmse": rmse, "r2": r2}
+    return best_alpha, best_metrics
+
+
+def fit_segmented_alpha(
+    y_true: np.ndarray,
+    base: np.ndarray,
+    corr_pred: np.ndarray,
+    gate_prob: np.ndarray,
+    alpha_candidates: List[float],
+    ratio_lower: float,
+    ratio_upper: float,
+    n_bins: int,
+    min_bin_rows: int,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    edges = make_adaptive_bins(base, n_bins)
+    bin_idx = assign_bins(base, edges)
+    default_alpha, _ = pick_best_alpha(
+        y_true=y_true,
+        base=base,
+        corr_pred=corr_pred,
+        gate_prob=gate_prob,
+        alpha_candidates=alpha_candidates,
+        ratio_lower=ratio_lower,
+        ratio_upper=ratio_upper,
+    )
+
+    alpha_by_bin = np.full(len(edges) - 1, default_alpha, dtype=float)
+    for b in range(len(alpha_by_bin)):
+        mask = bin_idx == b
+        if int(mask.sum()) < min_bin_rows:
+            continue
+        best_a, _ = pick_best_alpha(
+            y_true=y_true[mask],
+            base=base[mask],
+            corr_pred=corr_pred[mask],
+            gate_prob=gate_prob[mask],
+            alpha_candidates=alpha_candidates,
+            ratio_lower=ratio_lower,
+            ratio_upper=ratio_upper,
+        )
+        alpha_by_bin[b] = best_a
+
+    pred_slog = signed_log1p(base) + alpha_by_bin[bin_idx] * gate_prob * corr_pred
+    pred = signed_expm1(pred_slog)
+    pred_ratio = pred / base
+    pred_ratio = np.clip(pred_ratio, ratio_lower, ratio_upper)
+    pred = base * pred_ratio
+    mae = float(mean_absolute_error(y_true, pred))
+    rmse = float(math.sqrt(mean_squared_error(y_true, pred)))
+    r2 = float(r2_score(y_true, pred)) if len(y_true) >= 2 else np.nan
+    return edges, alpha_by_bin, {"mae": mae, "rmse": rmse, "r2": r2}
+
+
 def drop_sparse_or_constant_features(
     x_train: pd.DataFrame,
     x_test: pd.DataFrame,
@@ -683,6 +803,31 @@ def main() -> int:
         help=f"Quantile for gate label on |log-correction| (default: {DEFAULT_GATE_QUANTILE}).",
     )
     parser.add_argument(
+        "--gate-quantile-candidates",
+        default=DEFAULT_GATE_QUANTILE_CANDIDATES,
+        help=(
+            "Comma-separated candidates for auto gate-quantile search on validation "
+            f"(default: {DEFAULT_GATE_QUANTILE_CANDIDATES})."
+        ),
+    )
+    parser.add_argument(
+        "--disable-auto-gate-quantile",
+        action="store_true",
+        help="Disable automatic gate-quantile search and use --gate-quantile only.",
+    )
+    parser.add_argument(
+        "--baseline-alpha-bins",
+        type=int,
+        default=DEFAULT_BASELINE_ALPHA_BINS,
+        help=f"Number of baseline bins for segmented alpha (default: {DEFAULT_BASELINE_ALPHA_BINS}).",
+    )
+    parser.add_argument(
+        "--min-bin-rows",
+        type=int,
+        default=DEFAULT_MIN_BIN_ROWS,
+        help=f"Minimum validation rows to tune alpha per bin (default: {DEFAULT_MIN_BIN_ROWS}).",
+    )
+    parser.add_argument(
         "--min-feature-non-null-ratio",
         type=float,
         default=DEFAULT_MIN_FEATURE_NON_NULL_RATIO,
@@ -718,6 +863,12 @@ def main() -> int:
     if not (0.0 < args.gate_quantile < 1.0):
         print("[ERROR] --gate-quantile must be in (0, 1).")
         return 1
+    if args.baseline_alpha_bins < 2:
+        print("[ERROR] --baseline-alpha-bins must be >= 2.")
+        return 1
+    if args.min_bin_rows <= 0:
+        print("[ERROR] --min-bin-rows must be positive.")
+        return 1
     if not (0.0 <= args.min_feature_non_null_ratio < 1.0):
         print("[ERROR] --min-feature-non-null-ratio must be in [0, 1).")
         return 1
@@ -731,6 +882,15 @@ def main() -> int:
         alpha_candidates = parse_alpha_grid(args.alpha_grid)
     except Exception as exc:
         print(f"[ERROR] Invalid --alpha-grid: {exc}")
+        return 1
+    try:
+        gate_quantile_candidates = parse_float_list(args.gate_quantile_candidates)
+    except Exception as exc:
+        print(f"[ERROR] Invalid --gate-quantile-candidates: {exc}")
+        return 1
+    gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 < q < 1.0]
+    if not gate_quantile_candidates:
+        print("[ERROR] No valid gate quantile candidates in (0,1).")
         return 1
 
     try:
@@ -861,6 +1021,13 @@ def main() -> int:
         X_test,
         min_non_null_ratio=args.min_feature_non_null_ratio,
     )
+    X_train, X_test, id_like_drop_summary = drop_high_unique_id_like_features(
+        X_train,
+        X_test,
+        unique_ratio_threshold=0.98,
+        min_non_null_rows=200,
+    )
+    feature_drop_summary.update(id_like_drop_summary)
     if X_train.shape[1] == 0:
         print("[ERROR] No usable feature columns left after sparse/constant filtering.")
         return 1
@@ -895,56 +1062,95 @@ def main() -> int:
     x_val_corr_t = corr_pre_val.transform(x_val)
     corr_pred_val = corr_model_val.predict(x_val_corr_t)
 
-    # Gate classifier: whether correction magnitude is large enough to trust model correction
-    gate_thr = float(np.quantile(np.abs(y_corr_tr), args.gate_quantile))
-    y_gate_tr = (np.abs(y_corr_tr) >= gate_thr).astype(int)
-    gate_pre_val, gate_model_val = fit_gbdt_classifier_with_progress(
-        x_train=x_tr,
-        y_train=y_gate_tr,
-        numeric_cols=numeric_cols,
-        categorical_cols=categorical_cols,
-        n_estimators=args.n_estimators,
-        prefix="Correction gate classifier (validation)",
-    )
-    x_tr_gate_t = gate_pre_val.transform(x_tr)
-    x_val_gate_t = gate_pre_val.transform(x_val)
-    gate_pred_val = gate_model_val.predict(x_val_gate_t)
-    gate_acc_val = float(
-        accuracy_score((np.abs(y_corr_val_true) >= gate_thr).astype(int), gate_pred_val)
-    )
-    if hasattr(gate_model_val, "predict_proba"):
-        gate_prob_val = gate_model_val.predict_proba(x_val_gate_t)[:, 1]
-    else:
-        gate_prob_val = gate_pred_val.astype(float)
-
+    # Gate classifier with optional automatic quantile tuning.
     baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
     baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
     baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
 
-    # Search alpha on validation: generated = baseline + alpha * gate_prob * correction
-    best_alpha = alpha_candidates[0]
-    best_rmse = float("inf")
-    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan}
-    base_val_slog = signed_log1p(base_val)
-    for alpha in alpha_candidates:
-        y_slog_pred = base_val_slog + alpha * gate_prob_val * corr_pred_val
-        y_pred = signed_expm1(y_slog_pred)
-        # Keep prediction ratio inside train range.
-        y_ratio_pred = y_pred / base_val
-        y_ratio_pred = np.clip(y_ratio_pred, ratio_lower_val, ratio_upper_val)
-        y_pred = base_val * y_ratio_pred
+    if args.disable_auto_gate_quantile:
+        q_candidates = [args.gate_quantile]
+    else:
+        q_candidates = sorted(set(gate_quantile_candidates + [args.gate_quantile]))
 
-        mae = mean_absolute_error(y_tar_val, y_pred)
-        rmse = math.sqrt(mean_squared_error(y_tar_val, y_pred))
-        r2 = r2_score(y_tar_val, y_pred) if len(y_tar_val) >= 2 else np.nan
-        if rmse < best_rmse:
-            best_rmse = rmse
-            best_alpha = alpha
-            best_metrics = {"mae": mae, "rmse": rmse, "r2": r2}
+    best_val_package: Dict[str, Any] = {}
+    best_val_rmse = float("inf")
 
-    val_mae = float(best_metrics["mae"])
-    val_rmse = float(best_metrics["rmse"])
-    val_r2 = float(best_metrics["r2"])
+    for q in q_candidates:
+        gate_thr_cand = float(np.quantile(np.abs(y_corr_tr), q))
+        y_gate_tr = (np.abs(y_corr_tr) >= gate_thr_cand).astype(int)
+        gate_pre_cand, gate_model_cand = fit_gbdt_classifier_with_progress(
+            x_train=x_tr,
+            y_train=y_gate_tr,
+            numeric_cols=numeric_cols,
+            categorical_cols=categorical_cols,
+            n_estimators=args.n_estimators,
+            prefix=f"Correction gate classifier (validation, q={q:.2f})",
+        )
+        x_val_gate_t = gate_pre_cand.transform(x_val)
+        gate_pred_val = gate_model_cand.predict(x_val_gate_t)
+        gate_acc_cand = float(
+            accuracy_score((np.abs(y_corr_val_true) >= gate_thr_cand).astype(int), gate_pred_val)
+        )
+        if hasattr(gate_model_cand, "predict_proba"):
+            gate_prob_val = gate_model_cand.predict_proba(x_val_gate_t)[:, 1]
+        else:
+            gate_prob_val = gate_pred_val.astype(float)
+
+        # Global alpha
+        alpha_global, metrics_global = pick_best_alpha(
+            y_true=y_tar_val,
+            base=base_val,
+            corr_pred=corr_pred_val,
+            gate_prob=gate_prob_val,
+            alpha_candidates=alpha_candidates,
+            ratio_lower=ratio_lower_val,
+            ratio_upper=ratio_upper_val,
+        )
+
+        # Segmented alpha by baseline bins
+        alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
+            y_true=y_tar_val,
+            base=base_val,
+            corr_pred=corr_pred_val,
+            gate_prob=gate_prob_val,
+            alpha_candidates=alpha_candidates,
+            ratio_lower=ratio_lower_val,
+            ratio_upper=ratio_upper_val,
+            n_bins=args.baseline_alpha_bins,
+            min_bin_rows=args.min_bin_rows,
+        )
+
+        use_segment = metrics_segment["rmse"] < metrics_global["rmse"]
+        selected_metrics = metrics_segment if use_segment else metrics_global
+        selected_rmse = float(selected_metrics["rmse"])
+
+        if selected_rmse < best_val_rmse:
+            best_val_rmse = selected_rmse
+            best_val_package = {
+                "q": q,
+                "gate_thr": gate_thr_cand,
+                "gate_acc": gate_acc_cand,
+                "gate_pre": gate_pre_cand,
+                "gate_model": gate_model_cand,
+                "alpha_global": alpha_global,
+                "alpha_edges": alpha_edges_cand,
+                "alpha_by_bin": alpha_by_bin_cand,
+                "use_segment_alpha": use_segment,
+                "metrics_global": metrics_global,
+                "metrics_segment": metrics_segment,
+                "metrics_selected": selected_metrics,
+            }
+
+    selected_gate_quantile = float(best_val_package["q"])
+    gate_thr = float(best_val_package["gate_thr"])
+    gate_acc_val = float(best_val_package["gate_acc"])
+    best_alpha = float(best_val_package["alpha_global"])
+    best_alpha_edges = np.asarray(best_val_package["alpha_edges"], dtype=float)
+    best_alpha_by_bin = np.asarray(best_val_package["alpha_by_bin"], dtype=float)
+    use_segment_alpha = bool(best_val_package["use_segment_alpha"])
+    val_mae = float(best_val_package["metrics_selected"]["mae"])
+    val_rmse = float(best_val_package["metrics_selected"]["rmse"])
+    val_r2 = float(best_val_package["metrics_selected"]["r2"])
 
     # ----- Final full-train models -----
     y_corr_full = signed_log1p(y_train_target) - signed_log1p(baseline_train)
@@ -956,7 +1162,7 @@ def main() -> int:
         n_estimators=args.n_estimators,
         prefix="Correction regressor (final)",
     )
-    gate_thr_full = float(np.quantile(np.abs(y_corr_full), args.gate_quantile))
+    gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
     gate_pre_final, gate_model_final = fit_gbdt_classifier_with_progress(
         x_train=X_train,
@@ -976,7 +1182,16 @@ def main() -> int:
         gate_prob_test = gate_model_final.predict(x_test_gate_t).astype(float)
 
     baseline_test = test_df[baseline_col].map(extract_numeric).to_numpy(dtype=float)
-    test_slog_pred = signed_log1p(baseline_test) + best_alpha * gate_prob_test * corr_pred_test
+    if use_segment_alpha:
+        safe_base_for_bin = baseline_test.copy()
+        if np.isnan(safe_base_for_bin).any():
+            safe_base_for_bin[np.isnan(safe_base_for_bin)] = np.nanmedian(baseline_train)
+        test_bin_idx = assign_bins(safe_base_for_bin, best_alpha_edges)
+        test_alpha = best_alpha_by_bin[test_bin_idx]
+    else:
+        test_alpha = np.full_like(gate_prob_test, best_alpha, dtype=float)
+
+    test_slog_pred = signed_log1p(baseline_test) + test_alpha * gate_prob_test * corr_pred_test
     test_pred = signed_expm1(test_slog_pred)
     valid_test_base = np.abs(baseline_test) > BASELINE_EPS
     test_ratio_pred = np.full_like(test_pred, np.nan, dtype=float)
@@ -1009,7 +1224,9 @@ def main() -> int:
     print(f"Year-transformed columns: {llm_summary['year_transformed_cols']}")
     print(f"Alpha candidates: {alpha_candidates}")
     print(f"Best alpha (validation): {best_alpha}")
-    print(f"Gate quantile: {args.gate_quantile}")
+    print(f"Segmented alpha used: {'yes' if use_segment_alpha else 'no'}")
+    print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
+    print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
     print(f"Ratio clip range (validation): [{fmt(ratio_lower_val)}, {fmt(ratio_upper_val)}]")
@@ -1028,6 +1245,10 @@ def main() -> int:
         "Dropped feature cols (sparse/constant): "
         f"{feature_drop_summary['dropped_sparse_cols']}/"
         f"{feature_drop_summary['dropped_constant_cols']}"
+    )
+    print(
+        "Dropped feature cols (high-unique id-like): "
+        f"{feature_drop_summary['dropped_high_unique_id_like_cols']}"
     )
     if test_has_target_col:
         print("Test file contains target column: yes (excluded from features)")
