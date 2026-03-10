@@ -3,10 +3,11 @@
 Train a robust tree-based regressor from train table and generate predictions for test table.
 
 Goal:
-- Stage 1 (classification): predict adaptive target bin and whether baseline under/over-estimates target.
-- Stage 2 (regression): use Stage-1 outputs + original features to predict ratio = target / baseline.
-- Recover prediction with generated = baseline * ratio_pred.
-- Estimate a train ratio interval (default central 95%) and clip predicted ratios into this range.
+- Train a conservative correction model over baseline:
+  generated = baseline + alpha * gate_prob * correction
+- correction is learned in signed-log space for stability.
+- alpha is chosen on validation from a candidate grid.
+- Keep generated/baseline ratio in a train-derived interval (default central 95%).
 - Save a new file with prediction column named `generated`.
 
 Supports:
@@ -51,11 +52,13 @@ DEFAULT_BASELINE_COL = "wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
 DEFAULT_RATIO_COVERAGE = 0.95
-DEFAULT_TARGET_BINS = 10
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
+DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
+DEFAULT_GATE_QUANTILE = 0.6
+DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -551,6 +554,58 @@ def fmt(v: float) -> str:
     return f"{v:.6f}"
 
 
+def signed_log1p(x: np.ndarray) -> np.ndarray:
+    return np.sign(x) * np.log1p(np.abs(x))
+
+
+def signed_expm1(x: np.ndarray) -> np.ndarray:
+    return np.sign(x) * np.expm1(np.abs(x))
+
+
+def parse_alpha_grid(grid_text: str) -> List[float]:
+    parts = [p.strip() for p in str(grid_text).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("alpha grid is empty")
+    out: List[float] = []
+    for p in parts:
+        v = float(p)
+        if not (0.0 <= v <= 1.0):
+            raise ValueError(f"alpha must be in [0,1], got {v}")
+        out.append(v)
+    out = sorted(set(out))
+    return out
+
+
+def drop_sparse_or_constant_features(
+    x_train: pd.DataFrame,
+    x_test: pd.DataFrame,
+    min_non_null_ratio: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    keep_cols: List[str] = []
+    dropped_sparse = 0
+    dropped_constant = 0
+    for col in x_train.columns:
+        non_null_ratio = float(x_train[col].notna().mean())
+        if non_null_ratio < min_non_null_ratio:
+            dropped_sparse += 1
+            continue
+        # drop columns with no variation in train after cleaning
+        nunique = int(x_train[col].nunique(dropna=True))
+        if nunique <= 1:
+            dropped_constant += 1
+            continue
+        keep_cols.append(col)
+    return (
+        x_train[keep_cols].copy(),
+        x_test[keep_cols].copy(),
+        {
+            "kept_feature_cols": len(keep_cols),
+            "dropped_sparse_cols": dropped_sparse,
+            "dropped_constant_cols": dropped_constant,
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train robust tree model and generate target predictions.")
     parser.add_argument("--train-file", default=DEFAULT_TRAIN_FILE, help="Training CSV path")
@@ -578,12 +633,6 @@ def main() -> int:
         type=int,
         default=DEFAULT_N_ESTIMATORS,
         help=f"Number of boosting trees (default: {DEFAULT_N_ESTIMATORS}).",
-    )
-    parser.add_argument(
-        "--target-bins",
-        type=int,
-        default=DEFAULT_TARGET_BINS,
-        help=f"Adaptive target bin count for Stage-1 classification (default: {DEFAULT_TARGET_BINS}).",
     )
     parser.add_argument(
         "--ratio-coverage",
@@ -622,6 +671,26 @@ def main() -> int:
         default=DEFAULT_LLM_TEMPERATURE,
         help=f"LLM temperature (default: {DEFAULT_LLM_TEMPERATURE}).",
     )
+    parser.add_argument(
+        "--alpha-grid",
+        default=DEFAULT_ALPHA_GRID,
+        help=f"Comma-separated alpha candidates for blending (default: {DEFAULT_ALPHA_GRID})",
+    )
+    parser.add_argument(
+        "--gate-quantile",
+        type=float,
+        default=DEFAULT_GATE_QUANTILE,
+        help=f"Quantile for gate label on |log-correction| (default: {DEFAULT_GATE_QUANTILE}).",
+    )
+    parser.add_argument(
+        "--min-feature-non-null-ratio",
+        type=float,
+        default=DEFAULT_MIN_FEATURE_NON_NULL_RATIO,
+        help=(
+            "Drop feature columns with train non-null ratio below this threshold "
+            f"(default: {DEFAULT_MIN_FEATURE_NON_NULL_RATIO})."
+        ),
+    )
     args = parser.parse_args()
 
     train_path = Path(args.train_file)
@@ -643,17 +712,25 @@ def main() -> int:
     if args.n_estimators <= 0:
         print("[ERROR] --n-estimators must be a positive integer.")
         return 1
-    if args.target_bins < 2:
-        print("[ERROR] --target-bins must be >= 2.")
-        return 1
     if not (0.0 < args.ratio_coverage <= 1.0):
         print("[ERROR] --ratio-coverage must be in (0, 1].")
+        return 1
+    if not (0.0 < args.gate_quantile < 1.0):
+        print("[ERROR] --gate-quantile must be in (0, 1).")
+        return 1
+    if not (0.0 <= args.min_feature_non_null_ratio < 1.0):
+        print("[ERROR] --min-feature-non-null-ratio must be in [0, 1).")
         return 1
     if args.llm_sample_size <= 0:
         print("[ERROR] --llm-sample-size must be positive.")
         return 1
     if args.llm_max_new_tokens <= 0:
         print("[ERROR] --llm-max-new-tokens must be positive.")
+        return 1
+    try:
+        alpha_candidates = parse_alpha_grid(args.alpha_grid)
+    except Exception as exc:
+        print(f"[ERROR] Invalid --alpha-grid: {exc}")
         return 1
 
     try:
@@ -779,7 +856,18 @@ def main() -> int:
     X_train = apply_feature_cleaning(X_train_raw, numeric_cols, categorical_cols)
     X_test = apply_feature_cleaning(X_test_raw, numeric_cols, categorical_cols)
 
-    # Holdout validation using a strict 2-stage pipeline.
+    X_train, X_test, feature_drop_summary = drop_sparse_or_constant_features(
+        X_train,
+        X_test,
+        min_non_null_ratio=args.min_feature_non_null_ratio,
+    )
+    if X_train.shape[1] == 0:
+        print("[ERROR] No usable feature columns left after sparse/constant filtering.")
+        return 1
+    feature_cols = list(X_train.columns)
+    numeric_cols, categorical_cols = infer_feature_types(X_train, args.numeric_like_threshold)
+
+    # Holdout validation using conservative correction framework.
     x_tr, x_val, y_ratio_tr, _, y_tar_tr, y_tar_val, base_tr, base_val = train_test_split(
         X_train,
         y_train_ratio,
@@ -788,140 +876,115 @@ def main() -> int:
         test_size=0.2,
         random_state=42,
     )
-
-    # ----- Stage 1 (validation): target-bin classifier -----
-    bin_edges_val = make_adaptive_bins(y_tar_tr, args.target_bins)
-    y_bin_tr = assign_bins(y_tar_tr, bin_edges_val)
-    target_bin_count_val = len(bin_edges_val) - 1
-    stage1_bin_pre_val, stage1_bin_model_val = fit_gbdt_classifier_with_progress(
-        x_train=x_tr,
-        y_train=y_bin_tr,
-        numeric_cols=numeric_cols,
-        categorical_cols=categorical_cols,
-        n_estimators=args.n_estimators,
-        prefix="Stage1 bin classifier (validation)",
-    )
-    x_tr_bin_t = stage1_bin_pre_val.transform(x_tr)
-    x_val_bin_t = stage1_bin_pre_val.transform(x_val)
-    stage1_bin_pred_tr = stage1_bin_model_val.predict(x_tr_bin_t)
-    stage1_bin_pred_val = stage1_bin_model_val.predict(x_val_bin_t)
-    y_bin_val = assign_bins(y_tar_val, bin_edges_val)
-    stage1_bin_acc_val = float(accuracy_score(y_bin_val, stage1_bin_pred_val))
-
-    # ----- Stage 1 (validation): over/under classifier -----
-    # 1 -> baseline underestimates target, 0 -> baseline overestimates/equal
-    y_under_tr = (base_tr < y_tar_tr).astype(int)
-    stage1_ud_pre_val, stage1_ud_model_val = fit_gbdt_classifier_with_progress(
-        x_train=x_tr,
-        y_train=y_under_tr,
-        numeric_cols=numeric_cols,
-        categorical_cols=categorical_cols,
-        n_estimators=args.n_estimators,
-        prefix="Stage1 under/over classifier (validation)",
-    )
-    x_tr_ud_t = stage1_ud_pre_val.transform(x_tr)
-    x_val_ud_t = stage1_ud_pre_val.transform(x_val)
-    stage1_ud_pred_tr = stage1_ud_model_val.predict(x_tr_ud_t)
-    stage1_ud_pred_val = stage1_ud_model_val.predict(x_val_ud_t)
-    y_under_val = (base_val < y_tar_val).astype(int)
-    stage1_under_acc_val = float(accuracy_score(y_under_val, stage1_ud_pred_val))
-
-    # ----- Stage 2 (validation): ratio regression with stage-1 outputs -----
-    x_tr_stage2 = x_tr.copy()
-    x_val_stage2 = x_val.copy()
-    x_tr_stage2["stage1_target_bin_pred"] = stage1_bin_pred_tr.astype(float)
-    x_tr_stage2["stage1_under_pred"] = stage1_ud_pred_tr.astype(float)
-    x_val_stage2["stage1_target_bin_pred"] = stage1_bin_pred_val.astype(float)
-    x_val_stage2["stage1_under_pred"] = stage1_ud_pred_val.astype(float)
-
-    numeric_cols_stage2, categorical_cols_stage2 = infer_feature_types(
-        x_tr_stage2, args.numeric_like_threshold
-    )
-
     ratio_lower_val = float(np.quantile(y_ratio_tr, lower_q))
     ratio_upper_val = float(np.quantile(y_ratio_tr, upper_q))
     if ratio_lower_val > ratio_upper_val:
         ratio_lower_val, ratio_upper_val = ratio_upper_val, ratio_lower_val
 
-    stage2_pre_val, stage2_model_val = fit_gbdt_with_progress(
-        x_train=x_tr_stage2,
-        y_train=y_ratio_tr,
-        numeric_cols=numeric_cols_stage2,
-        categorical_cols=categorical_cols_stage2,
+    # Regressor target: correction in signed-log space
+    y_corr_tr = signed_log1p(y_tar_tr) - signed_log1p(base_tr)
+    y_corr_val_true = signed_log1p(y_tar_val) - signed_log1p(base_val)
+    corr_pre_val, corr_model_val = fit_gbdt_with_progress(
+        x_train=x_tr,
+        y_train=y_corr_tr,
+        numeric_cols=numeric_cols,
+        categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
-        prefix="Stage2 ratio regressor (validation)",
+        prefix="Correction regressor (validation)",
     )
-    x_val_stage2_t = stage2_pre_val.transform(x_val_stage2)
-    val_ratio_pred = stage2_model_val.predict(x_val_stage2_t)
-    val_ratio_pred = np.clip(val_ratio_pred, ratio_lower_val, ratio_upper_val)
-    val_pred = base_val * val_ratio_pred
+    x_val_corr_t = corr_pre_val.transform(x_val)
+    corr_pred_val = corr_model_val.predict(x_val_corr_t)
 
-    val_mae = mean_absolute_error(y_tar_val, val_pred)
-    val_rmse = math.sqrt(mean_squared_error(y_tar_val, val_pred))
-    val_r2 = r2_score(y_tar_val, val_pred) if len(y_tar_val) >= 2 else np.nan
+    # Gate classifier: whether correction magnitude is large enough to trust model correction
+    gate_thr = float(np.quantile(np.abs(y_corr_tr), args.gate_quantile))
+    y_gate_tr = (np.abs(y_corr_tr) >= gate_thr).astype(int)
+    gate_pre_val, gate_model_val = fit_gbdt_classifier_with_progress(
+        x_train=x_tr,
+        y_train=y_gate_tr,
+        numeric_cols=numeric_cols,
+        categorical_cols=categorical_cols,
+        n_estimators=args.n_estimators,
+        prefix="Correction gate classifier (validation)",
+    )
+    x_tr_gate_t = gate_pre_val.transform(x_tr)
+    x_val_gate_t = gate_pre_val.transform(x_val)
+    gate_pred_val = gate_model_val.predict(x_val_gate_t)
+    gate_acc_val = float(
+        accuracy_score((np.abs(y_corr_val_true) >= gate_thr).astype(int), gate_pred_val)
+    )
+    if hasattr(gate_model_val, "predict_proba"):
+        gate_prob_val = gate_model_val.predict_proba(x_val_gate_t)[:, 1]
+    else:
+        gate_prob_val = gate_pred_val.astype(float)
 
     baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
     baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
     baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
 
-    # ----- Final full-train pipeline -----
-    bin_edges_final = make_adaptive_bins(y_train_target, args.target_bins)
-    y_bin_full = assign_bins(y_train_target, bin_edges_final)
-    target_bin_count_final = len(bin_edges_final) - 1
-    y_under_full = (baseline_train < y_train_target).astype(int)
+    # Search alpha on validation: generated = baseline + alpha * gate_prob * correction
+    best_alpha = alpha_candidates[0]
+    best_rmse = float("inf")
+    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan}
+    base_val_slog = signed_log1p(base_val)
+    for alpha in alpha_candidates:
+        y_slog_pred = base_val_slog + alpha * gate_prob_val * corr_pred_val
+        y_pred = signed_expm1(y_slog_pred)
+        # Keep prediction ratio inside train range.
+        y_ratio_pred = y_pred / base_val
+        y_ratio_pred = np.clip(y_ratio_pred, ratio_lower_val, ratio_upper_val)
+        y_pred = base_val * y_ratio_pred
 
-    stage1_bin_pre_final, stage1_bin_model_final = fit_gbdt_classifier_with_progress(
+        mae = mean_absolute_error(y_tar_val, y_pred)
+        rmse = math.sqrt(mean_squared_error(y_tar_val, y_pred))
+        r2 = r2_score(y_tar_val, y_pred) if len(y_tar_val) >= 2 else np.nan
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_alpha = alpha
+            best_metrics = {"mae": mae, "rmse": rmse, "r2": r2}
+
+    val_mae = float(best_metrics["mae"])
+    val_rmse = float(best_metrics["rmse"])
+    val_r2 = float(best_metrics["r2"])
+
+    # ----- Final full-train models -----
+    y_corr_full = signed_log1p(y_train_target) - signed_log1p(baseline_train)
+    corr_pre_final, corr_model_final = fit_gbdt_with_progress(
         x_train=X_train,
-        y_train=y_bin_full,
+        y_train=y_corr_full,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
-        prefix="Stage1 bin classifier (final)",
+        prefix="Correction regressor (final)",
     )
-    stage1_ud_pre_final, stage1_ud_model_final = fit_gbdt_classifier_with_progress(
+    gate_thr_full = float(np.quantile(np.abs(y_corr_full), args.gate_quantile))
+    y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
+    gate_pre_final, gate_model_final = fit_gbdt_classifier_with_progress(
         x_train=X_train,
-        y_train=y_under_full,
+        y_train=y_gate_full,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
-        prefix="Stage1 under/over classifier (final)",
+        prefix="Correction gate classifier (final)",
     )
 
-    x_train_bin_t = stage1_bin_pre_final.transform(X_train)
-    x_test_bin_t = stage1_bin_pre_final.transform(X_test)
-    stage1_bin_pred_train = stage1_bin_model_final.predict(x_train_bin_t)
-    stage1_bin_pred_test = stage1_bin_model_final.predict(x_test_bin_t)
+    x_test_corr_t = corr_pre_final.transform(X_test)
+    corr_pred_test = corr_model_final.predict(x_test_corr_t)
+    x_test_gate_t = gate_pre_final.transform(X_test)
+    if hasattr(gate_model_final, "predict_proba"):
+        gate_prob_test = gate_model_final.predict_proba(x_test_gate_t)[:, 1]
+    else:
+        gate_prob_test = gate_model_final.predict(x_test_gate_t).astype(float)
 
-    x_train_ud_t = stage1_ud_pre_final.transform(X_train)
-    x_test_ud_t = stage1_ud_pre_final.transform(X_test)
-    stage1_ud_pred_train = stage1_ud_model_final.predict(x_train_ud_t)
-    stage1_ud_pred_test = stage1_ud_model_final.predict(x_test_ud_t)
-
-    x_train_stage2 = X_train.copy()
-    x_test_stage2 = X_test.copy()
-    x_train_stage2["stage1_target_bin_pred"] = stage1_bin_pred_train.astype(float)
-    x_train_stage2["stage1_under_pred"] = stage1_ud_pred_train.astype(float)
-    x_test_stage2["stage1_target_bin_pred"] = stage1_bin_pred_test.astype(float)
-    x_test_stage2["stage1_under_pred"] = stage1_ud_pred_test.astype(float)
-
-    numeric_cols_stage2_final, categorical_cols_stage2_final = infer_feature_types(
-        x_train_stage2, args.numeric_like_threshold
-    )
-
-    stage2_pre_final, stage2_model_final = fit_gbdt_with_progress(
-        x_train=x_train_stage2,
-        y_train=y_train_ratio,
-        numeric_cols=numeric_cols_stage2_final,
-        categorical_cols=categorical_cols_stage2_final,
-        n_estimators=args.n_estimators,
-        prefix="Stage2 ratio regressor (final)",
-    )
-    x_test_stage2_t = stage2_pre_final.transform(x_test_stage2)
-    test_ratio_pred = stage2_model_final.predict(x_test_stage2_t)
-    test_ratio_pred = np.clip(test_ratio_pred, ratio_lower, ratio_upper)
     baseline_test = test_df[baseline_col].map(extract_numeric).to_numpy(dtype=float)
+    test_slog_pred = signed_log1p(baseline_test) + best_alpha * gate_prob_test * corr_pred_test
+    test_pred = signed_expm1(test_slog_pred)
+    valid_test_base = np.abs(baseline_test) > BASELINE_EPS
+    test_ratio_pred = np.full_like(test_pred, np.nan, dtype=float)
+    test_ratio_pred[valid_test_base] = test_pred[valid_test_base] / baseline_test[valid_test_base]
+    test_ratio_pred = np.clip(test_ratio_pred, ratio_lower, ratio_upper)
     test_pred = baseline_test * test_ratio_pred
     missing_test_baseline_rows = int(np.isnan(baseline_test).sum())
+    near_zero_test_baseline_rows = int((~np.isnan(baseline_test) & (np.abs(baseline_test) <= BASELINE_EPS)).sum())
 
     output_df = test_df.copy()
     output_df[generated_col] = test_pred
@@ -944,8 +1007,10 @@ def main() -> int:
     print(f"Dropped id-like columns: {llm_summary['dropped_id_like_cols']}")
     print(f"Datetime-expanded columns: {llm_summary['datetime_expanded_cols']}")
     print(f"Year-transformed columns: {llm_summary['year_transformed_cols']}")
-    print(f"Stage1 target bins requested: {args.target_bins}")
-    print(f"Stage1 target bins used (validation/final): {target_bin_count_val}/{target_bin_count_final}")
+    print(f"Alpha candidates: {alpha_candidates}")
+    print(f"Best alpha (validation): {best_alpha}")
+    print(f"Gate quantile: {args.gate_quantile}")
+    print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
     print(f"Ratio clip range (validation): [{fmt(ratio_lower_val)}, {fmt(ratio_upper_val)}]")
     print(f"Ratio clip range (final): [{fmt(ratio_lower)}, {fmt(ratio_upper)}]")
@@ -959,6 +1024,11 @@ def main() -> int:
     print(f"Feature count: {len(feature_cols)}")
     print(f"Numeric features: {len(numeric_cols)}")
     print(f"Categorical features: {len(categorical_cols)}")
+    print(
+        "Dropped feature cols (sparse/constant): "
+        f"{feature_drop_summary['dropped_sparse_cols']}/"
+        f"{feature_drop_summary['dropped_constant_cols']}"
+    )
     if test_has_target_col:
         print("Test file contains target column: yes (excluded from features)")
     else:
@@ -970,11 +1040,15 @@ def main() -> int:
             "Rows with missing/invalid baseline in test: "
             f"{missing_test_baseline_rows} (generated becomes NaN for these rows)"
         )
+    if near_zero_test_baseline_rows > 0:
+        print(
+            "Rows with near-zero baseline in test: "
+            f"{near_zero_test_baseline_rows} (generated becomes NaN for these rows)"
+        )
     print()
 
     print("=== Holdout Metrics (20% validation split) ===")
-    print(f"Stage1 bin accuracy : {stage1_bin_acc_val:.6f}")
-    print(f"Stage1 under/over accuracy : {stage1_under_acc_val:.6f}")
+    print(f"Gate accuracy : {gate_acc_val:.6f}")
     print("---")
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
     print(f"Baseline RMSE : {fmt(baseline_val_rmse)}")
