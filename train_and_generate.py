@@ -18,11 +18,12 @@ Supports:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,10 @@ DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
 DEFAULT_RATIO_COVERAGE = 0.95
 DEFAULT_TARGET_BINS = 10
+DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
+DEFAULT_LLM_SAMPLE_SIZE = 20
+DEFAULT_LLM_MAX_NEW_TOKENS = 220
+DEFAULT_LLM_TEMPERATURE = 0.0
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -239,6 +244,222 @@ def assign_bins(y: np.ndarray, edges: np.ndarray) -> np.ndarray:
     return np.digitize(y, edges[1:-1], right=False).astype(int)
 
 
+def _sample_values_for_llm(series: pd.Series, sample_size: int) -> List[str]:
+    s = series.dropna()
+    if s.empty:
+        return []
+    return s.astype(str).drop_duplicates().head(sample_size).tolist()
+
+
+def _quick_stats_for_llm(series: pd.Series) -> Dict[str, Any]:
+    total = int(series.shape[0])
+    na_count = int(series.isna().sum())
+    non_na = max(total - na_count, 1)
+    nunique = int(series.nunique(dropna=True))
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    dt = pd.to_datetime(series, errors="coerce", utc=True)
+
+    numeric_ratio = float(numeric.notna().mean()) if total > 0 else 0.0
+    datetime_ratio = float(dt.notna().mean()) if total > 0 else 0.0
+    unique_ratio = float(nunique / non_na)
+
+    year_like_ratio = 0.0
+    if numeric.notna().any():
+        n = numeric.dropna()
+        year_like_ratio = float(((n >= 1900) & (n <= 2100) & (np.floor(n) == n)).mean())
+
+    return {
+        "total": total,
+        "na_count": na_count,
+        "nunique": nunique,
+        "unique_ratio_non_na": round(unique_ratio, 6),
+        "numeric_parse_ratio": round(numeric_ratio, 6),
+        "datetime_parse_ratio": round(datetime_ratio, 6),
+        "year_like_ratio_among_numeric": round(year_like_ratio, 6),
+    }
+
+
+def _safe_json_object(text: str) -> Dict[str, Any]:
+    text = text.strip()
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    return {}
+
+
+def infer_feature_semantics_with_llm(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: List[str],
+    model_path: str,
+    sample_size: int,
+    max_new_tokens: int,
+    temperature: float,
+) -> Dict[str, Dict[str, Any]]:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype="auto",
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model.eval()
+
+    decisions: Dict[str, Dict[str, Any]] = {}
+    total = len(feature_cols)
+    for idx, col in enumerate(feature_cols, start=1):
+        stats = {
+            "train": _quick_stats_for_llm(train_df[col] if col in train_df.columns else pd.Series(dtype="object")),
+            "test": _quick_stats_for_llm(test_df[col] if col in test_df.columns else pd.Series(dtype="object")),
+        }
+        train_samples = _sample_values_for_llm(train_df[col] if col in train_df.columns else pd.Series(dtype="object"), sample_size)
+        test_samples = _sample_values_for_llm(test_df[col] if col in test_df.columns else pd.Series(dtype="object"), sample_size)
+
+        schema_hint = {
+            "final_type": "one of [id, datetime, year, numeric, categorical, text, unknown]",
+            "recommended_actions": {
+                "drop_as_feature": "bool",
+                "parse_datetime": "bool",
+                "extract_datetime_parts": "array like [year,month,day,hour,weekday] or []",
+                "treat_as_year": "bool",
+            },
+        }
+
+        prompt = (
+            "You are a tabular feature engineering expert. Return STRICT JSON only.\n"
+            f"Schema hint: {json.dumps(schema_hint, ensure_ascii=False)}\n"
+            f"Column: {col}\n"
+            f"Stats: {json.dumps(stats, ensure_ascii=False)}\n"
+            f"Train samples: {json.dumps(train_samples, ensure_ascii=False)}\n"
+            f"Test samples: {json.dumps(test_samples, ensure_ascii=False)}\n"
+        )
+        messages = [
+            {"role": "system", "content": "Output valid JSON only."},
+            {"role": "user", "content": prompt},
+        ]
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer([text], return_tensors="pt").to(model.device)
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        gen_ids = output_ids[0][inputs["input_ids"].shape[-1] :]
+        generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+        parsed = _safe_json_object(generated_text)
+
+        decisions[col] = parsed if parsed else {"final_type": "unknown", "recommended_actions": {}}
+        print_progress_bar(idx, total, prefix="LLM feature profiling")
+
+    return decisions
+
+
+def infer_feature_semantics_heuristic(train_df: pd.DataFrame, feature_cols: List[str]) -> Dict[str, Dict[str, Any]]:
+    decisions: Dict[str, Dict[str, Any]] = {}
+    for col in feature_cols:
+        s = train_df[col]
+        stats = _quick_stats_for_llm(s)
+        final_type = "categorical"
+        actions = {
+            "drop_as_feature": False,
+            "parse_datetime": False,
+            "extract_datetime_parts": [],
+            "treat_as_year": False,
+        }
+        col_low = col.lower()
+        if any(k in col_low for k in ["id", "uuid", "guid", "key"]):
+            final_type = "id"
+            actions["drop_as_feature"] = True
+        elif stats["datetime_parse_ratio"] >= 0.8:
+            final_type = "datetime"
+            actions["parse_datetime"] = True
+            actions["extract_datetime_parts"] = ["year", "month", "day", "hour", "weekday"]
+        elif stats["numeric_parse_ratio"] >= 0.8 and stats["year_like_ratio_among_numeric"] >= 0.8:
+            final_type = "year"
+            actions["treat_as_year"] = True
+        elif stats["numeric_parse_ratio"] >= 0.8:
+            final_type = "numeric"
+        decisions[col] = {"final_type": final_type, "recommended_actions": actions}
+    return decisions
+
+
+def apply_semantic_feature_engineering(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: List[str],
+    decisions: Dict[str, Dict[str, Any]],
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], Dict[str, int]]:
+    updated_feature_cols: List[str] = []
+    dropped_id_like = 0
+    datetime_expanded = 0
+    year_transformed = 0
+
+    for col in feature_cols:
+        decision = decisions.get(col, {})
+        actions = decision.get("recommended_actions", {}) if isinstance(decision, dict) else {}
+        final_type = str(decision.get("final_type", "")).lower() if isinstance(decision, dict) else ""
+
+        drop_col = bool(actions.get("drop_as_feature", False)) or final_type == "id"
+        parse_datetime = bool(actions.get("parse_datetime", False)) or final_type == "datetime"
+        treat_as_year = bool(actions.get("treat_as_year", False)) or final_type == "year"
+
+        if drop_col:
+            dropped_id_like += 1
+            continue
+
+        if parse_datetime:
+            datetime_expanded += 1
+            for df in (train_df, test_df):
+                dt = pd.to_datetime(df[col], errors="coerce", utc=True)
+                df[f"{col}__year"] = dt.dt.year
+                df[f"{col}__month"] = dt.dt.month
+                df[f"{col}__day"] = dt.dt.day
+                df[f"{col}__hour"] = dt.dt.hour
+                df[f"{col}__weekday"] = dt.dt.weekday
+            updated_feature_cols.extend(
+                [f"{col}__year", f"{col}__month", f"{col}__day", f"{col}__hour", f"{col}__weekday"]
+            )
+            continue
+
+        if treat_as_year:
+            year_transformed += 1
+            for df in (train_df, test_df):
+                year_num = df[col].map(extract_numeric)
+                df[f"{col}__year"] = year_num
+                df[f"{col}__age_from_2026"] = 2026 - year_num
+            updated_feature_cols.extend([f"{col}__year", f"{col}__age_from_2026"])
+            continue
+
+        updated_feature_cols.append(col)
+
+    summary = {
+        "dropped_id_like_cols": dropped_id_like,
+        "datetime_expanded_cols": datetime_expanded,
+        "year_transformed_cols": year_transformed,
+    }
+    return train_df, test_df, updated_feature_cols, summary
+
+
 def print_progress_bar(current: int, total: int, prefix: str = "Training") -> None:
     width = 30
     ratio = 0.0 if total == 0 else current / total
@@ -339,6 +560,34 @@ def main() -> int:
             "Example: 0.95 -> use [2.5%, 97.5%] ratio quantiles."
         ),
     )
+    parser.add_argument(
+        "--llm-model-path",
+        default=DEFAULT_LLM_MODEL_PATH,
+        help=f"Local LLM model path for automatic feature semantics (default: {DEFAULT_LLM_MODEL_PATH})",
+    )
+    parser.add_argument(
+        "--disable-llm-feature-profiler",
+        action="store_true",
+        help="Disable LLM-based feature semantics and use heuristic rules only.",
+    )
+    parser.add_argument(
+        "--llm-sample-size",
+        type=int,
+        default=DEFAULT_LLM_SAMPLE_SIZE,
+        help=f"Sample values per column for LLM prompt (default: {DEFAULT_LLM_SAMPLE_SIZE}).",
+    )
+    parser.add_argument(
+        "--llm-max-new-tokens",
+        type=int,
+        default=DEFAULT_LLM_MAX_NEW_TOKENS,
+        help=f"LLM max new tokens per column (default: {DEFAULT_LLM_MAX_NEW_TOKENS}).",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=DEFAULT_LLM_TEMPERATURE,
+        help=f"LLM temperature (default: {DEFAULT_LLM_TEMPERATURE}).",
+    )
     args = parser.parse_args()
 
     train_path = Path(args.train_file)
@@ -365,6 +614,12 @@ def main() -> int:
         return 1
     if not (0.0 < args.ratio_coverage <= 1.0):
         print("[ERROR] --ratio-coverage must be in (0, 1].")
+        return 1
+    if args.llm_sample_size <= 0:
+        print("[ERROR] --llm-sample-size must be positive.")
+        return 1
+    if args.llm_max_new_tokens <= 0:
+        print("[ERROR] --llm-max-new-tokens must be positive.")
         return 1
 
     try:
@@ -401,6 +656,50 @@ def main() -> int:
 
     # Explicitly keep test target untouched and never use it as a feature.
     test_has_target_col = target_col in test_df.columns
+
+    llm_used = False
+    llm_mode = "heuristic"
+    llm_summary = {
+        "dropped_id_like_cols": 0,
+        "datetime_expanded_cols": 0,
+        "year_transformed_cols": 0,
+    }
+    feature_semantic_decisions: Dict[str, Dict[str, Any]] = {}
+    if not args.disable_llm_feature_profiler:
+        try:
+            model_path = Path(args.llm_model_path)
+            if model_path.exists():
+                feature_semantic_decisions = infer_feature_semantics_with_llm(
+                    train_df=train_df,
+                    test_df=test_df,
+                    feature_cols=feature_cols,
+                    model_path=str(model_path),
+                    sample_size=args.llm_sample_size,
+                    max_new_tokens=args.llm_max_new_tokens,
+                    temperature=args.llm_temperature,
+                )
+                llm_used = True
+                llm_mode = "llm"
+            else:
+                print(
+                    f"[WARN] LLM model path not found: {model_path}. "
+                    "Falling back to heuristic feature semantics."
+                )
+        except Exception as exc:
+            print(f"[WARN] LLM feature profiling failed, fallback to heuristic: {exc}")
+
+    if not feature_semantic_decisions:
+        feature_semantic_decisions = infer_feature_semantics_heuristic(train_df, feature_cols)
+
+    train_df, test_df, feature_cols, llm_summary = apply_semantic_feature_engineering(
+        train_df=train_df,
+        test_df=test_df,
+        feature_cols=feature_cols,
+        decisions=feature_semantic_decisions,
+    )
+    if not feature_cols:
+        print("[ERROR] No feature columns left after semantic feature engineering.")
+        return 1
 
     # Ensure test has all required feature columns (missing ones will be filled with NaN).
     missing_in_test = [c for c in feature_cols if c not in test_df.columns]
@@ -606,6 +905,11 @@ def main() -> int:
     print(f"Target column: {target_col}")
     print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
+    print(f"Feature semantics mode: {llm_mode}")
+    print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
+    print(f"Dropped id-like columns: {llm_summary['dropped_id_like_cols']}")
+    print(f"Datetime-expanded columns: {llm_summary['datetime_expanded_cols']}")
+    print(f"Year-transformed columns: {llm_summary['year_transformed_cols']}")
     print(f"Stage1 target bins requested: {args.target_bins}")
     print(f"Stage1 target bins used (validation/final): {target_bin_count_val}/{target_bin_count_final}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
