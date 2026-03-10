@@ -30,8 +30,8 @@ from tqdm.auto import tqdm
 # =========================
 # Editable defaults
 # =========================
-DEFAULT_TRAIN_FILE = "../modified/train_clean.csv"
-DEFAULT_TEST_FILE = "../modified/test_clean.csv"
+DEFAULT_TRAIN_FILE = "../modified/train_3_clean.csv"
+DEFAULT_TEST_FILE = "../modified/test_3_clean.csv"
 DEFAULT_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_OUTPUT_JSON = "feature_profile_report.json"
 DEFAULT_SAMPLE_SIZE = 20

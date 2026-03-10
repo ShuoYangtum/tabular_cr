@@ -37,6 +37,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -61,6 +63,9 @@ DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
 DEFAULT_MODEL_TYPE = "tabpfn"
+DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
+DEFAULT_CALIBRATION_METHOD = "isotonic"
+DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
 DEFAULT_GATE_QUANTILE = 0.6
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
@@ -716,6 +721,26 @@ def objective_value(metrics: Dict[str, float], objective: str) -> float:
     return float(0.6 * metrics["rmse"] + 0.4 * metrics["trimmed_rmse90"])
 
 
+def fit_posthoc_calibrator(
+    y_true: np.ndarray, y_pred: np.ndarray, method: str
+) -> tuple[object, np.ndarray]:
+    if method == "isotonic":
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(y_pred, y_true)
+        y_cal = calibrator.predict(y_pred)
+        return calibrator, y_cal
+    calibrator = LinearRegression()
+    calibrator.fit(y_pred.reshape(-1, 1), y_true)
+    y_cal = calibrator.predict(y_pred.reshape(-1, 1))
+    return calibrator, y_cal
+
+
+def apply_posthoc_calibrator(calibrator: object, x: np.ndarray, method: str) -> np.ndarray:
+    if method == "isotonic":
+        return calibrator.predict(x)
+    return calibrator.predict(x.reshape(-1, 1))
+
+
 def drop_high_unique_id_like_features(
     x_train: pd.DataFrame,
     x_test: pd.DataFrame,
@@ -892,6 +917,27 @@ def main() -> int:
         help=f"Model family for regressor/classifier (default: {DEFAULT_MODEL_TYPE}).",
     )
     parser.add_argument(
+        "--enable-posthoc-calibration",
+        action="store_true",
+        default=DEFAULT_ENABLE_POSTHOC_CALIBRATION,
+        help="Enable post-hoc calibration fitted on validation predictions.",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=["isotonic", "linear"],
+        default=DEFAULT_CALIBRATION_METHOD,
+        help=f"Post-hoc calibration method (default: {DEFAULT_CALIBRATION_METHOD}).",
+    )
+    parser.add_argument(
+        "--calibration-min-rel-gain",
+        type=float,
+        default=DEFAULT_CALIBRATION_MIN_REL_GAIN,
+        help=(
+            "Minimum relative RMSE gain on validation required to apply calibration "
+            f"(default: {DEFAULT_CALIBRATION_MIN_REL_GAIN})."
+        ),
+    )
+    parser.add_argument(
         "--ratio-coverage",
         type=float,
         default=DEFAULT_RATIO_COVERAGE,
@@ -1033,6 +1079,9 @@ def main() -> int:
         return 1
     if args.min_validation_rel_gain < 0:
         print("[ERROR] --min-validation-rel-gain must be >= 0.")
+        return 1
+    if args.calibration_min_rel_gain < 0:
+        print("[ERROR] --calibration-min-rel-gain must be >= 0.")
         return 1
     if not (0.0 <= args.min_feature_non_null_ratio < 1.0):
         print("[ERROR] --min-feature-non-null-ratio must be in [0, 1).")
@@ -1316,6 +1365,7 @@ def main() -> int:
                 "gate_acc": gate_acc_cand,
                 "gate_pre": gate_pre_cand,
                 "gate_model": gate_model_cand,
+                "gate_prob_val": gate_prob_val,
                 "alpha_global": alpha_global,
                 "alpha_edges": alpha_edges_cand,
                 "alpha_by_bin": alpha_by_bin_cand,
@@ -1333,6 +1383,7 @@ def main() -> int:
     best_alpha_edges = np.asarray(best_val_package["alpha_edges"], dtype=float)
     best_alpha_by_bin = np.asarray(best_val_package["alpha_by_bin"], dtype=float)
     use_segment_alpha = bool(best_val_package["use_segment_alpha"])
+    selected_gate_prob_val = np.asarray(best_val_package["gate_prob_val"], dtype=float)
     val_mae = float(best_val_package["metrics_selected"]["mae"])
     val_rmse = float(best_val_package["metrics_selected"]["rmse"])
     val_r2 = float(best_val_package["metrics_selected"]["r2"])
@@ -1349,6 +1400,42 @@ def main() -> int:
         val_rmse = float(baseline_val_metrics["rmse"])
         val_r2 = float(baseline_val_metrics["r2"])
         val_trimmed_rmse90 = float(baseline_val_metrics["trimmed_rmse90"])
+
+    # Build selected validation predictions (before optional calibration).
+    if use_segment_alpha:
+        val_bin_idx = assign_bins(base_val, best_alpha_edges)
+        val_alpha = best_alpha_by_bin[val_bin_idx]
+    else:
+        val_alpha = np.full_like(selected_gate_prob_val, best_alpha, dtype=float)
+    val_slog_pred = signed_log1p(base_val) + val_alpha * selected_gate_prob_val * corr_pred_val
+    val_pred_selected = signed_expm1(val_slog_pred)
+    val_valid_base = np.abs(base_val) > BASELINE_EPS
+    val_ratio_pred = np.full_like(val_pred_selected, np.nan, dtype=float)
+    val_ratio_pred[val_valid_base] = val_pred_selected[val_valid_base] / base_val[val_valid_base]
+    val_ratio_pred = np.clip(val_ratio_pred, ratio_lower_val, ratio_upper_val)
+    val_pred_selected[val_valid_base] = base_val[val_valid_base] * val_ratio_pred[val_valid_base]
+
+    # Optional post-hoc calibration fitted only on validation predictions (leak-safe for test).
+    calibration_used = False
+    calibration_rel_gain = np.nan
+    calibrator = None
+    if args.enable_posthoc_calibration:
+        calibrator, val_pred_cal = fit_posthoc_calibrator(
+            y_true=y_tar_val,
+            y_pred=val_pred_selected,
+            method=args.calibration_method,
+        )
+        pre_metrics = evaluate_predictions(y_tar_val, val_pred_selected)
+        cal_metrics = evaluate_predictions(y_tar_val, val_pred_cal)
+        calibration_rel_gain = (
+            pre_metrics["rmse"] - cal_metrics["rmse"]
+        ) / max(abs(pre_metrics["rmse"]), 1e-12)
+        if calibration_rel_gain >= args.calibration_min_rel_gain:
+            calibration_used = True
+            val_mae = float(cal_metrics["mae"])
+            val_rmse = float(cal_metrics["rmse"])
+            val_r2 = float(cal_metrics["r2"])
+            val_trimmed_rmse90 = float(cal_metrics["trimmed_rmse90"])
 
     # ----- Final full-train models -----
     y_corr_full = signed_log1p(y_train_target) - signed_log1p(baseline_train)
@@ -1398,6 +1485,16 @@ def main() -> int:
     test_ratio_pred[valid_test_base] = test_pred[valid_test_base] / baseline_test[valid_test_base]
     test_ratio_pred = np.clip(test_ratio_pred, ratio_lower, ratio_upper)
     test_pred = baseline_test * test_ratio_pred
+
+    if calibration_used and calibrator is not None:
+        valid_pred = np.isfinite(test_pred)
+        if np.any(valid_pred):
+            test_pred[valid_pred] = apply_posthoc_calibrator(
+                calibrator=calibrator,
+                x=test_pred[valid_pred],
+                method=args.calibration_method,
+            )
+
     missing_test_baseline_rows = int(np.isnan(baseline_test).sum())
     near_zero_test_baseline_rows = int((~np.isnan(baseline_test) & (np.abs(baseline_test) <= BASELINE_EPS)).sum())
 
@@ -1432,6 +1529,10 @@ def main() -> int:
     print(f"Tuning objective: {args.tune_objective}")
     print(f"Validation relative gain: {rel_gain:.6f}")
     print(f"Fallback to baseline correction: {'yes' if fallback_to_baseline else 'no'}")
+    print(f"Post-hoc calibration enabled/used: {'yes' if args.enable_posthoc_calibration else 'no'}/{ 'yes' if calibration_used else 'no'}")
+    if np.isfinite(calibration_rel_gain):
+        print(f"Post-hoc calibration validation RMSE rel gain: {calibration_rel_gain:.6f}")
+    print(f"Post-hoc calibration method: {args.calibration_method}")
     print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
