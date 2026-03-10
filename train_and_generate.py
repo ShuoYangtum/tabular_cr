@@ -3,8 +3,9 @@
 Train a robust tree-based regressor from train table and generate predictions for test table.
 
 Goal:
-- Train residuals: residual = target - baseline.
-- Predict residuals for test file, then recover prediction with generated = baseline + residual_pred.
+- Train ratio: ratio = target / baseline.
+- Predict ratio for test file, then recover prediction with generated = baseline * ratio_pred.
+- Estimate a train ratio interval (default central 95%) and clip predicted ratios into this range.
 - Save a new file with prediction column named `generated`.
 
 Supports:
@@ -37,13 +38,14 @@ from sklearn.preprocessing import OrdinalEncoder
 # =========================
 # Editable defaults (quick way)
 # =========================
-DEFAULT_TRAIN_FILE = "../modified/train.csv"
-DEFAULT_TEST_FILE = "../modified/test.csv"
+DEFAULT_TRAIN_FILE = "../modified/train_clean.csv"
+DEFAULT_TEST_FILE = "../modified/test_clean.csv"
 DEFAULT_OUTPUT_FILE = "generated.csv"
 DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
+DEFAULT_RATIO_COVERAGE = 0.95
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -52,6 +54,7 @@ NUMERIC_LIKE_THRESHOLD = 0.85
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 MISSING_STRINGS = {"", "nan", "none", "null", "na", "n/a", "-", "--", "unknown"}
 FLOAT32_SAFE_MAX = np.finfo(np.float32).max * 0.99
+BASELINE_EPS = 1e-12
 
 
 def extract_numeric(value) -> float:
@@ -251,7 +254,7 @@ def main() -> int:
     parser.add_argument(
         "--baseline-col",
         default=DEFAULT_BASELINE_COL,
-        help=f"Baseline column used for residual learning (default: {DEFAULT_BASELINE_COL})",
+        help=f"Baseline column used for ratio learning (default: {DEFAULT_BASELINE_COL})",
     )
     parser.add_argument(
         "--generated-col",
@@ -269,6 +272,15 @@ def main() -> int:
         type=int,
         default=DEFAULT_N_ESTIMATORS,
         help=f"Number of boosting trees (default: {DEFAULT_N_ESTIMATORS}).",
+    )
+    parser.add_argument(
+        "--ratio-coverage",
+        type=float,
+        default=DEFAULT_RATIO_COVERAGE,
+        help=(
+            "Central coverage for ratio clipping range from train data. "
+            "Example: 0.95 -> use [2.5%, 97.5%] ratio quantiles."
+        ),
     )
     args = parser.parse_args()
 
@@ -290,6 +302,9 @@ def main() -> int:
         return 1
     if args.n_estimators <= 0:
         print("[ERROR] --n-estimators must be a positive integer.")
+        return 1
+    if not (0.0 < args.ratio_coverage <= 1.0):
+        print("[ERROR] --ratio-coverage must be in (0, 1].")
         return 1
 
     try:
@@ -313,7 +328,7 @@ def main() -> int:
     if baseline_col not in test_df.columns:
         print(
             f"[ERROR] baseline column '{baseline_col}' not found in test file. "
-            "Residual recovery requires baseline in test."
+            "Ratio recovery requires baseline in test."
         )
         print(f"Available columns: {list(test_df.columns)}")
         return 1
@@ -321,7 +336,7 @@ def main() -> int:
     # Build feature set from train columns excluding target and baseline.
     feature_cols = [c for c in train_df.columns if c not in {target_col, baseline_col}]
     if not feature_cols:
-        print("[ERROR] No feature columns found after excluding target column.")
+        print("[ERROR] No feature columns found after excluding target and baseline columns.")
         return 1
 
     # Explicitly keep test target untouched and never use it as a feature.
@@ -338,17 +353,32 @@ def main() -> int:
 
     target_all = train_df[target_col].map(extract_numeric)
     baseline_train_all = train_df[baseline_col].map(extract_numeric)
-    valid_train_mask = target_all.notna() & baseline_train_all.notna()
+    baseline_nonzero_mask = baseline_train_all.abs() > BASELINE_EPS
+    ratio_all = target_all / baseline_train_all
+    ratio_finite_mask = ratio_all.notna() & np.isfinite(ratio_all) & (ratio_all.abs() <= FLOAT32_SAFE_MAX)
+    valid_train_mask = target_all.notna() & baseline_train_all.notna() & baseline_nonzero_mask & ratio_finite_mask
     dropped_target_rows = int(target_all.isna().sum())
     dropped_baseline_rows = int(baseline_train_all.isna().sum())
+    dropped_zero_baseline_rows = int((baseline_train_all.notna() & (~baseline_nonzero_mask)).sum())
+    dropped_invalid_ratio_rows = int((~ratio_finite_mask).sum())
     dropped_train_rows = int((~valid_train_mask).sum())
 
     X_train_raw = X_train_raw.loc[valid_train_mask].reset_index(drop=True)
     y_train_target = target_all.loc[valid_train_mask].to_numpy(dtype=float)
     baseline_train = baseline_train_all.loc[valid_train_mask].to_numpy(dtype=float)
-    y_train_residual = y_train_target - baseline_train
+    y_train_ratio = ratio_all.loc[valid_train_mask].to_numpy(dtype=float)
 
-    if len(y_train_residual) < 20:
+    lower_q = (1.0 - args.ratio_coverage) / 2.0
+    upper_q = 1.0 - lower_q
+    ratio_lower = float(np.quantile(y_train_ratio, lower_q))
+    ratio_upper = float(np.quantile(y_train_ratio, upper_q))
+    if not np.isfinite(ratio_lower) or not np.isfinite(ratio_upper):
+        print("[ERROR] Failed to compute valid ratio quantile range from train data.")
+        return 1
+    if ratio_lower > ratio_upper:
+        ratio_lower, ratio_upper = ratio_upper, ratio_lower
+
+    if len(y_train_ratio) < 20:
         print("[ERROR] Too few valid training rows after cleaning target/baseline (<20).")
         return 1
 
@@ -357,9 +387,9 @@ def main() -> int:
     X_test = apply_feature_cleaning(X_test_raw, numeric_cols, categorical_cols)
 
     # Quick holdout evaluation for sanity check (with progress bar).
-    x_tr, x_val, y_res_tr, _, _, y_tar_val, _, base_val = train_test_split(
+    x_tr, x_val, y_ratio_tr, _, _, y_tar_val, _, base_val = train_test_split(
         X_train,
-        y_train_residual,
+        y_train_ratio,
         y_train_target,
         baseline_train,
         test_size=0.2,
@@ -367,15 +397,16 @@ def main() -> int:
     )
     eval_preprocessor, eval_model = fit_gbdt_with_progress(
         x_train=x_tr,
-        y_train=y_res_tr,
+        y_train=y_ratio_tr,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Training (validation model)",
     )
     x_val_t = eval_preprocessor.transform(x_val)
-    val_residual_pred = eval_model.predict(x_val_t)
-    val_pred = base_val + val_residual_pred
+    val_ratio_pred = eval_model.predict(x_val_t)
+    val_ratio_pred = np.clip(val_ratio_pred, ratio_lower, ratio_upper)
+    val_pred = base_val * val_ratio_pred
     val_mae = mean_absolute_error(y_tar_val, val_pred)
     val_rmse = math.sqrt(mean_squared_error(y_tar_val, val_pred))
     val_r2 = r2_score(y_tar_val, val_pred) if len(y_tar_val) >= 2 else np.nan
@@ -383,16 +414,17 @@ def main() -> int:
     # Refit on full cleaned train set for final prediction (with progress bar).
     final_preprocessor, final_model = fit_gbdt_with_progress(
         x_train=X_train,
-        y_train=y_train_residual,
+        y_train=y_train_ratio,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         n_estimators=args.n_estimators,
         prefix="Training (final model)",
     )
     x_test_t = final_preprocessor.transform(X_test)
-    test_residual_pred = final_model.predict(x_test_t)
+    test_ratio_pred = final_model.predict(x_test_t)
+    test_ratio_pred = np.clip(test_ratio_pred, ratio_lower, ratio_upper)
     baseline_test = test_df[baseline_col].map(extract_numeric).to_numpy(dtype=float)
-    test_pred = baseline_test + test_residual_pred
+    test_pred = baseline_test * test_ratio_pred
     missing_test_baseline_rows = int(np.isnan(baseline_test).sum())
 
     output_df = test_df.copy()
@@ -411,10 +443,14 @@ def main() -> int:
     print(f"Target column: {target_col}")
     print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
+    print(f"Ratio coverage: {args.ratio_coverage:.2%}")
+    print(f"Ratio clip range: [{fmt(ratio_lower)}, {fmt(ratio_upper)}]")
     print(f"Original train rows: {len(train_df)}")
-    print(f"Valid train rows used: {len(y_train_residual)}")
+    print(f"Valid train rows used: {len(y_train_ratio)}")
     print(f"Dropped rows (invalid target): {dropped_target_rows}")
     print(f"Dropped rows (invalid baseline): {dropped_baseline_rows}")
+    print(f"Dropped rows (baseline approximately zero): {dropped_zero_baseline_rows}")
+    print(f"Dropped rows (invalid target/baseline ratio): {dropped_invalid_ratio_rows}")
     print(f"Dropped rows (invalid target/baseline union): {dropped_train_rows}")
     print(f"Feature count: {len(feature_cols)}")
     print(f"Numeric features: {len(numeric_cols)}")
