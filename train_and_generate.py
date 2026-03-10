@@ -63,6 +63,8 @@ DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
 DEFAULT_MODEL_TYPE = "tabpfn"
+DEFAULT_TABPFN_REG_MODEL_PATH = "../modifiedPrior-Labs/TabPFN-v2-reg"
+DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/Prior-Labs/TabPFN-v2-clf"
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
@@ -589,6 +591,7 @@ def fit_gbdt_with_progress(
     n_estimators: int,
     prefix: str,
     model_type: str,
+    tabpfn_model_path: str | None = None,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -600,7 +603,8 @@ def fit_gbdt_with_progress(
             raise RuntimeError(
                 "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
             ) from exc
-        model = TabPFNRegressor()
+        model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="reg")
+        model = TabPFNRegressor(model_path=model_path) if model_path else TabPFNRegressor()
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -626,6 +630,7 @@ def fit_gbdt_classifier_with_progress(
     n_estimators: int,
     prefix: str,
     model_type: str,
+    tabpfn_model_path: str | None = None,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -637,7 +642,8 @@ def fit_gbdt_classifier_with_progress(
             raise RuntimeError(
                 "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
             ) from exc
-        model = TabPFNClassifier()
+        model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="clf")
+        model = TabPFNClassifier(model_path=model_path) if model_path else TabPFNClassifier()
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -739,6 +745,26 @@ def apply_posthoc_calibrator(calibrator: object, x: np.ndarray, method: str) -> 
     if method == "isotonic":
         return calibrator.predict(x)
     return calibrator.predict(x.reshape(-1, 1))
+
+
+def resolve_tabpfn_model_path(path_like: str, task: str) -> str | None:
+    if not path_like:
+        return None
+    p = Path(path_like)
+    if p.is_file():
+        return str(p)
+    if p.is_dir():
+        candidates = sorted(p.glob("*.ckpt"))
+        if not candidates:
+            return None
+        task_hint = "reg" if task == "reg" else "clf"
+        # Prefer task-matching file names first.
+        for c in candidates:
+            name = c.name.lower()
+            if task_hint in name or ("regressor" in name and task == "reg") or ("classifier" in name and task == "clf"):
+                return str(c)
+        return str(candidates[0])
+    return None
 
 
 def drop_high_unique_id_like_features(
@@ -915,6 +941,22 @@ def main() -> int:
         default=DEFAULT_MODEL_TYPE,
         choices=["gbdt", "hgbt", "tabpfn"],
         help=f"Model family for regressor/classifier (default: {DEFAULT_MODEL_TYPE}).",
+    )
+    parser.add_argument(
+        "--tabpfn-reg-model-path",
+        default=DEFAULT_TABPFN_REG_MODEL_PATH,
+        help=(
+            "Local TabPFN regressor weights path (file or directory). "
+            f"Default: {DEFAULT_TABPFN_REG_MODEL_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--tabpfn-clf-model-path",
+        default=DEFAULT_TABPFN_CLF_MODEL_PATH,
+        help=(
+            "Local TabPFN classifier weights path (file or directory). "
+            f"Default: {DEFAULT_TABPFN_CLF_MODEL_PATH}"
+        ),
     )
     parser.add_argument(
         "--enable-posthoc-calibration",
@@ -1106,6 +1148,21 @@ def main() -> int:
     if not gate_quantile_candidates:
         print("[ERROR] No valid gate quantile candidates in (0,1).")
         return 1
+    tabpfn_reg_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_reg_model_path, task="reg")
+    tabpfn_clf_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_clf_model_path, task="clf")
+    if args.model_type == "tabpfn":
+        if not tabpfn_reg_model_path_resolved:
+            print(
+                "[ERROR] model-type=tabpfn but regressor local weights not found. "
+                "Set --tabpfn-reg-model-path to a .ckpt file or directory containing one."
+            )
+            return 1
+        if not tabpfn_clf_model_path_resolved:
+            print(
+                "[ERROR] model-type=tabpfn but classifier local weights not found. "
+                "Set --tabpfn-clf-model-path to a .ckpt file or directory containing one."
+            )
+            return 1
 
     try:
         train_df = load_csv(train_path)
@@ -1285,6 +1342,7 @@ def main() -> int:
         n_estimators=args.n_estimators,
         prefix="Correction regressor (validation)",
         model_type=args.model_type,
+        tabpfn_model_path=tabpfn_reg_model_path_resolved,
     )
     x_val_corr_t = corr_pre_val.transform(x_val)
     corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1314,6 +1372,7 @@ def main() -> int:
             n_estimators=args.n_estimators,
             prefix=f"Correction gate classifier (validation, q={q:.2f})",
             model_type=args.model_type,
+            tabpfn_model_path=tabpfn_clf_model_path_resolved,
         )
         x_val_gate_t = gate_pre_cand.transform(x_val)
         gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -1447,6 +1506,7 @@ def main() -> int:
         n_estimators=args.n_estimators,
         prefix="Correction regressor (final)",
         model_type=args.model_type,
+        tabpfn_model_path=tabpfn_reg_model_path_resolved,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -1458,6 +1518,7 @@ def main() -> int:
         n_estimators=args.n_estimators,
         prefix="Correction gate classifier (final)",
         model_type=args.model_type,
+        tabpfn_model_path=tabpfn_clf_model_path_resolved,
     )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -1515,6 +1576,9 @@ def main() -> int:
     print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
     print(f"Model type: {args.model_type}")
+    if args.model_type == "tabpfn":
+        print(f"TabPFN regressor weights: {tabpfn_reg_model_path_resolved}")
+        print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
     print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
