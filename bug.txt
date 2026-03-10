@@ -73,7 +73,7 @@ Prediction complete. New file written with generated column.
 /home/yangsext/tabular/measure_error.py:89: DtypeWarning: Columns (298,301,302,303,308,310,427,428,429,431) have mixed types. Specify dtype option on import or set low_memory=False.
   return pd.read_csv(file_path)
 === Data Cleaning Summary ===
-File: generated_calibrated.csv
+File: generated.csv
 Total rows: 2759
 Used rows: 2687
 Dropped rows: 72
@@ -81,19 +81,19 @@ Rows with invalid target: 0
 Rows with invalid generated: 72
 
 === Error Metrics (target=true, generated=pred) ===
-MAE            : 2341669.298486
-MSE            : 574688504132293.625000
-RMSE           : 23972661.598836
-MedianAE       : 49.502517
-P90AE          : 28958.534534
-P95AE          : 243086.100021
-TrimmedMAE90   : 6185.580718
-TrimmedRMSE90  : 26808.462762
-Bias(mean err) : -1652408.679237
-MAPE(%)        : 79.687517
-MdAPE(%)       : 33.258611
-sMAPE(%)       : 50.630034
-WAPE(%)        : 77.398596
-nMAE/med(|y|)  : 11708.346492
-R2             : 0.387792
+MAE            : 2510853.621659
+MSE            : 716196114984113.000000
+RMSE           : 26761840.650152
+MedianAE       : 46.415197
+P90AE          : 19567.233718
+P95AE          : 215602.709497
+TrimmedMAE90   : 4898.999403
+TrimmedRMSE90  : 22047.052680
+Bias(mean err) : -1330427.265101
+MAPE(%)        : 88.462067
+MdAPE(%)       : 23.075172
+sMAPE(%)       : 50.708798
+WAPE(%)        : 82.990602
+nMAE/med(|y|)  : 12554.268108
+R2             : 0.237045
 (gptq) [yangsext@tux100p700 ~/tabular]# 
