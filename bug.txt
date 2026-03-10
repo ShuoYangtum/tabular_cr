@@ -1,94 +1,93 @@
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
-Correction regressor (validation): [##############################] 300/300
-Correction gate classifier (validation, q=0.50): [##############################] 300/300
-Correction gate classifier (validation, q=0.60): [##############################] 300/300
-Correction gate classifier (validation, q=0.70): [##############################] 300/300
-Correction gate classifier (validation, q=0.80): [##############################] 300/300
-Correction regressor (final): [##############################] 300/300
-Correction gate classifier (final): [##############################] 300/300
-=== Training Summary ===
-Train file: ../modified/train_3_clean.csv
-Test file: ../modified/test_3_clean.csv
-Output file: generated.csv
-Target column: esg_firma_esg-bewertung__input__wasserverbrauch-m3
-Baseline column: esg_firma_wasser_berechnet
-Generated column: generated
-Model type: gbdt
-Feature semantics mode: cache
-LLM profiling used: no
-Feature semantic cache used: yes
-Feature semantic cache file: feature_semantic_cache.json
-Dropped id-like columns: 19
-Datetime-expanded columns: 19
-Year-transformed columns: 12
-Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-Best alpha (validation): 1.0
-Segmented alpha used: yes
-Baseline alpha bins: 10, min bin rows: 80
-Tuning objective: hybrid
-Validation relative gain: 0.253683
-Fallback to baseline correction: no
-Post-hoc calibration enabled/used: no/no
-Post-hoc calibration method: isotonic
-Gate quantile selected: 0.5
-Gate threshold |corr_log| (validation/final): 1.789409/1.793423
-Ratio coverage: 95.00%
-Ratio clip range (validation): [0.000814, 24.142857]
-Ratio clip range (final): [0.000563, 23.507128]
-Original train rows: 8206
-Valid train rows used: 7984
-Dropped rows (invalid target): 0
-Dropped rows (invalid baseline): 0
-Dropped rows (baseline approximately zero): 222
-Dropped rows (invalid target/baseline ratio): 222
-Dropped rows (invalid target/baseline union): 222
-Feature count: 470
-Numeric features: 350
-Categorical features: 120
-Dropped feature cols (sparse/constant): 102/53
-Dropped feature cols (high-unique id-like): 0
-Test file contains target column: yes (excluded from features)
-Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
+Correction regressor (validation): [------------------------------] 0/1error uploading: HTTPSConnectionPool(host='eu.i.posthog.com', port=443): Max retries exceeded with url: /batch/ (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))
+^CTraceback (most recent call last):
+  File "/home/yangsext/tabular/train_and_generate.py", line 1660, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 1337, in main
+    corr_pre_val, corr_model_val = fit_gbdt_with_progress(
+                                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 609, in fit_gbdt_with_progress
+    model.fit(x_train_t, y_train)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 320, in wrapper
+    return _safe_call_with_telemetry(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 364, in _safe_call_with_telemetry
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/regressor.py", line 801, in fit
+    self.executor_ = create_inference_engine(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/base.py", line 325, in create_inference_engine
+    return InferenceEngineCachePreprocessing(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/inference.py", line 600, in __init__
+    ensemble_preprocessor.fit_transform_ensemble_members(
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/ensemble.py", line 163, in fit_transform_ensemble_members
+    return list(
+           ^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/ensemble.py", line 140, in fit_transform_ensemble_members_iterator
+    for i, (
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/transform.py", line 169, in fit_preprocessing
+    yield from executor(  # type: ignore[misc]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1918, in __call__
+    return output if self.return_generator else list(output)
+                                                ^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1847, in _get_sequential_output
+    res = func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/transform.py", line 67, in _fit_preprocessing_one
+    res = preprocessor.fit_transform(X_train, feature_schema)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/pipeline_interface.py", line 258, in fit_transform
+    X, feature_schema = self._process_steps(X, feature_schema, is_fitting=True)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/pipeline_interface.py", line 339, in _process_steps
+    step.fit_transform(X, feature_schema)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/pipeline_interface.py", line 151, in fit_transform
+    self.feature_schema_updated_ = self._fit(X, feature_schema)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/steps/add_svd_features_step.py", line 75, in _fit
+    transformer.fit(X)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/base.py", line 1474, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/pipeline.py", line 475, in fit
+    self._final_estimator.fit(Xt, y, **last_step_params["fit"])
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/decomposition/_truncated_svd.py", line 209, in fit
+    self.fit_transform(X)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/utils/_set_output.py", line 295, in wrapped
+    data_to_wrap = f(self, X, *args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/base.py", line 1474, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/decomposition/_truncated_svd.py", line 234, in fit_transform
+    U, Sigma, VT = svds(X, k=self.n_components, tol=self.tol, v0=v0)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/scipy/_lib/_util.py", line 440, in wrapper
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/scipy/sparse/linalg/_eigen/_svds.py", line 513, in svds
+    eigvec, _ = np.linalg.qr(eigvec)
+                ^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/numpy/linalg/linalg.py", line 983, in qr
+    q = gufunc(a, tau, signature=signature, extobj=extobj)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+^CException ignored in atexit callback: <bound method Client.join of <posthog.Posthog object at 0x14756de08990>>
+Traceback (most recent call last):
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/posthog/client.py", line 1194, in join
+    consumer.join()
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/threading.py", line 1112, in join
+    self._wait_for_tstate_lock()
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/threading.py", line 1132, in _wait_for_tstate_lock
+    if lock.acquire(block, timeout):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt: 
 
-=== Holdout Metrics (20% validation split) ===
-Gate accuracy : 0.988729
----
-Baseline MAE  : 1302061.954890
-Baseline RMSE : 16069673.099473
-Baseline R2   : 0.005419
-Baseline TrimmedRMSE90 : 78988.335263
----
-MAE  : 943979.304179
-RMSE : 12021173.165774
-R2   : 0.443430
-TrimmedRMSE90 : 16801.038221
-
-Prediction complete. New file written with generated column.
-(gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
-/home/yangsext/tabular/measure_error.py:89: DtypeWarning: Columns (298,301,302,303,308,310,427,428,429,431) have mixed types. Specify dtype option on import or set low_memory=False.
-  return pd.read_csv(file_path)
-=== Data Cleaning Summary ===
-File: generated_calibrated.csv
-Total rows: 2759
-Used rows: 2687
-Dropped rows: 72
-Rows with invalid target: 0
-Rows with invalid generated: 72
-
-=== Error Metrics (target=true, generated=pred) ===
-MAE            : 2341669.298486
-MSE            : 574688504132293.625000
-RMSE           : 23972661.598836
-MedianAE       : 49.502517
-P90AE          : 28958.534534
-P95AE          : 243086.100021
-TrimmedMAE90   : 6185.580718
-TrimmedRMSE90  : 26808.462762
-Bias(mean err) : -1652408.679237
-MAPE(%)        : 79.687517
-MdAPE(%)       : 33.258611
-sMAPE(%)       : 50.630034
-WAPE(%)        : 77.398596
-nMAE/med(|y|)  : 11708.346492
-R2             : 0.387792
 (gptq) [yangsext@tux100p700 ~/tabular]# 
