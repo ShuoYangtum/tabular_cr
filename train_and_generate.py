@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import warnings
@@ -598,6 +599,7 @@ def fit_gbdt_with_progress(
 
     if model_type == "tabpfn":
         try:
+            configure_tabpfn_runtime(disable_telemetry=True)
             from tabpfn import TabPFNRegressor
         except Exception as exc:
             raise RuntimeError(
@@ -637,6 +639,7 @@ def fit_gbdt_classifier_with_progress(
 
     if model_type == "tabpfn":
         try:
+            configure_tabpfn_runtime(disable_telemetry=True)
             from tabpfn import TabPFNClassifier
         except Exception as exc:
             raise RuntimeError(
@@ -765,6 +768,15 @@ def resolve_tabpfn_model_path(path_like: str, task: str) -> str | None:
                 return str(c)
         return str(candidates[0])
     return None
+
+
+def configure_tabpfn_runtime(disable_telemetry: bool = True) -> None:
+    if not disable_telemetry:
+        return
+    # Avoid proxy-related noise/failures from telemetry in restricted networks.
+    os.environ.setdefault("TABPFN_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("POSTHOG_DISABLED", "1")
+    os.environ.setdefault("DO_NOT_TRACK", "1")
 
 
 def drop_high_unique_id_like_features(
@@ -1579,6 +1591,7 @@ def main() -> int:
     if args.model_type == "tabpfn":
         print(f"TabPFN regressor weights: {tabpfn_reg_model_path_resolved}")
         print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
+        print("TabPFN telemetry: disabled")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
     print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
