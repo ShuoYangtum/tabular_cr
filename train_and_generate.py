@@ -22,6 +22,7 @@ import json
 import math
 import re
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -260,7 +261,7 @@ def _quick_stats_for_llm(series: pd.Series) -> Dict[str, Any]:
     nunique = int(series.nunique(dropna=True))
 
     numeric = pd.to_numeric(series, errors="coerce")
-    dt = pd.to_datetime(series, errors="coerce", utc=True)
+    dt = parse_datetime_series(series)
 
     numeric_ratio = float(numeric.notna().mean()) if total > 0 else 0.0
     datetime_ratio = float(dt.notna().mean()) if total > 0 else 0.0
@@ -280,6 +281,16 @@ def _quick_stats_for_llm(series: pd.Series) -> Dict[str, Any]:
         "datetime_parse_ratio": round(datetime_ratio, 6),
         "year_like_ratio_among_numeric": round(year_like_ratio, 6),
     }
+
+
+def parse_datetime_series(series: pd.Series) -> pd.Series:
+    # Prefer mixed format parsing (pandas>=2) and silence format-inference warnings.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Could not infer format.*", category=UserWarning)
+        try:
+            return pd.to_datetime(series, errors="coerce", utc=True, format="mixed")
+        except TypeError:
+            return pd.to_datetime(series, errors="coerce", utc=True)
 
 
 def _safe_json_object(text: str) -> Dict[str, Any]:
@@ -319,9 +330,10 @@ def infer_feature_semantics_with_llm(
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype="auto",
-        device_map="auto",
         trust_remote_code=True,
     )
+    if torch.cuda.is_available():
+        model = model.to("cuda")
     model.eval()
 
     decisions: Dict[str, Dict[str, Any]] = {}
@@ -357,7 +369,9 @@ def infer_feature_semantics_with_llm(
             {"role": "user", "content": prompt},
         ]
         text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer([text], return_tensors="pt").to(model.device)
+        inputs = tokenizer([text], return_tensors="pt")
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
@@ -415,6 +429,8 @@ def apply_semantic_feature_engineering(
     dropped_id_like = 0
     datetime_expanded = 0
     year_transformed = 0
+    train_new_cols: Dict[str, pd.Series] = {}
+    test_new_cols: Dict[str, pd.Series] = {}
 
     for col in feature_cols:
         decision = decisions.get(col, {})
@@ -431,13 +447,18 @@ def apply_semantic_feature_engineering(
 
         if parse_datetime:
             datetime_expanded += 1
-            for df in (train_df, test_df):
-                dt = pd.to_datetime(df[col], errors="coerce", utc=True)
-                df[f"{col}__year"] = dt.dt.year
-                df[f"{col}__month"] = dt.dt.month
-                df[f"{col}__day"] = dt.dt.day
-                df[f"{col}__hour"] = dt.dt.hour
-                df[f"{col}__weekday"] = dt.dt.weekday
+            dt_train = parse_datetime_series(train_df[col])
+            dt_test = parse_datetime_series(test_df[col])
+            train_new_cols[f"{col}__year"] = dt_train.dt.year
+            train_new_cols[f"{col}__month"] = dt_train.dt.month
+            train_new_cols[f"{col}__day"] = dt_train.dt.day
+            train_new_cols[f"{col}__hour"] = dt_train.dt.hour
+            train_new_cols[f"{col}__weekday"] = dt_train.dt.weekday
+            test_new_cols[f"{col}__year"] = dt_test.dt.year
+            test_new_cols[f"{col}__month"] = dt_test.dt.month
+            test_new_cols[f"{col}__day"] = dt_test.dt.day
+            test_new_cols[f"{col}__hour"] = dt_test.dt.hour
+            test_new_cols[f"{col}__weekday"] = dt_test.dt.weekday
             updated_feature_cols.extend(
                 [f"{col}__year", f"{col}__month", f"{col}__day", f"{col}__hour", f"{col}__weekday"]
             )
@@ -445,14 +466,25 @@ def apply_semantic_feature_engineering(
 
         if treat_as_year:
             year_transformed += 1
-            for df in (train_df, test_df):
-                year_num = df[col].map(extract_numeric)
-                df[f"{col}__year"] = year_num
-                df[f"{col}__age_from_2026"] = 2026 - year_num
+            train_year = train_df[col].map(extract_numeric)
+            test_year = test_df[col].map(extract_numeric)
+            train_new_cols[f"{col}__year"] = train_year
+            train_new_cols[f"{col}__age_from_2026"] = 2026 - train_year
+            test_new_cols[f"{col}__year"] = test_year
+            test_new_cols[f"{col}__age_from_2026"] = 2026 - test_year
             updated_feature_cols.extend([f"{col}__year", f"{col}__age_from_2026"])
             continue
 
         updated_feature_cols.append(col)
+
+    if train_new_cols:
+        train_df = pd.concat([train_df, pd.DataFrame(train_new_cols, index=train_df.index)], axis=1).copy()
+    else:
+        train_df = train_df.copy()
+    if test_new_cols:
+        test_df = pd.concat([test_df, pd.DataFrame(test_new_cols, index=test_df.index)], axis=1).copy()
+    else:
+        test_df = test_df.copy()
 
     summary = {
         "dropped_id_like_cols": dropped_id_like,
