@@ -593,6 +593,7 @@ def fit_gbdt_with_progress(
     prefix: str,
     model_type: str,
     tabpfn_model_path: str | None = None,
+    tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -606,7 +607,11 @@ def fit_gbdt_with_progress(
                 "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
             ) from exc
         model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="reg")
-        model = TabPFNRegressor(model_path=model_path) if model_path else TabPFNRegressor()
+        resolved_device = resolve_tabpfn_device(tabpfn_device)
+        model_kwargs: Dict[str, Any] = {"device": resolved_device}
+        if model_path:
+            model_kwargs["model_path"] = model_path
+        model = TabPFNRegressor(**model_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -633,6 +638,7 @@ def fit_gbdt_classifier_with_progress(
     prefix: str,
     model_type: str,
     tabpfn_model_path: str | None = None,
+    tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -646,7 +652,11 @@ def fit_gbdt_classifier_with_progress(
                 "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
             ) from exc
         model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="clf")
-        model = TabPFNClassifier(model_path=model_path) if model_path else TabPFNClassifier()
+        resolved_device = resolve_tabpfn_device(tabpfn_device)
+        model_kwargs: Dict[str, Any] = {"device": resolved_device}
+        if model_path:
+            model_kwargs["model_path"] = model_path
+        model = TabPFNClassifier(**model_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -777,6 +787,21 @@ def configure_tabpfn_runtime(disable_telemetry: bool = True) -> None:
     os.environ.setdefault("TABPFN_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("POSTHOG_DISABLED", "1")
     os.environ.setdefault("DO_NOT_TRACK", "1")
+
+
+def resolve_tabpfn_device(device_setting: str) -> str:
+    d = str(device_setting).strip().lower()
+    if d not in {"auto", "cpu", "cuda"}:
+        raise ValueError(f"Invalid tabpfn device: {device_setting}")
+    if d in {"cpu", "cuda"}:
+        return d
+    # auto
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
 
 def drop_high_unique_id_like_features(
@@ -971,6 +996,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--tabpfn-device",
+        default=DEFAULT_TABPFN_DEVICE,
+        choices=["auto", "cpu", "cuda"],
+        help=(
+            "TabPFN compute device. auto chooses cuda when available, else cpu "
+            f"(default: {DEFAULT_TABPFN_DEVICE})."
+        ),
+    )
+    parser.add_argument(
         "--enable-posthoc-calibration",
         action="store_true",
         default=DEFAULT_ENABLE_POSTHOC_CALIBRATION,
@@ -1159,6 +1193,14 @@ def main() -> int:
     gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 < q < 1.0]
     if not gate_quantile_candidates:
         print("[ERROR] No valid gate quantile candidates in (0,1).")
+        return 1
+    try:
+        resolved_tabpfn_device = resolve_tabpfn_device(args.tabpfn_device)
+    except Exception as exc:
+        print(f"[ERROR] Invalid --tabpfn-device: {exc}")
+        return 1
+    if args.model_type == "tabpfn" and args.tabpfn_device == "cuda" and resolved_tabpfn_device != "cuda":
+        print("[ERROR] --tabpfn-device=cuda requested but CUDA is not available.")
         return 1
     tabpfn_reg_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_reg_model_path, task="reg")
     tabpfn_clf_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_clf_model_path, task="clf")
@@ -1355,6 +1397,7 @@ def main() -> int:
         prefix="Correction regressor (validation)",
         model_type=args.model_type,
         tabpfn_model_path=tabpfn_reg_model_path_resolved,
+        tabpfn_device=resolved_tabpfn_device,
     )
     x_val_corr_t = corr_pre_val.transform(x_val)
     corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1385,6 +1428,7 @@ def main() -> int:
             prefix=f"Correction gate classifier (validation, q={q:.2f})",
             model_type=args.model_type,
             tabpfn_model_path=tabpfn_clf_model_path_resolved,
+            tabpfn_device=resolved_tabpfn_device,
         )
         x_val_gate_t = gate_pre_cand.transform(x_val)
         gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -1519,6 +1563,7 @@ def main() -> int:
         prefix="Correction regressor (final)",
         model_type=args.model_type,
         tabpfn_model_path=tabpfn_reg_model_path_resolved,
+        tabpfn_device=resolved_tabpfn_device,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -1531,6 +1576,7 @@ def main() -> int:
         prefix="Correction gate classifier (final)",
         model_type=args.model_type,
         tabpfn_model_path=tabpfn_clf_model_path_resolved,
+        tabpfn_device=resolved_tabpfn_device,
     )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -1591,6 +1637,7 @@ def main() -> int:
     if args.model_type == "tabpfn":
         print(f"TabPFN regressor weights: {tabpfn_reg_model_path_resolved}")
         print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
+        print(f"TabPFN device (requested/resolved): {args.tabpfn_device}/{resolved_tabpfn_device}")
         print("TabPFN telemetry: disabled")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
