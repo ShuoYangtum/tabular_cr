@@ -23,10 +23,10 @@ import pandas as pd
 # =========================
 # Editable defaults
 # =========================
-DEFAULT_TRAIN_FILE = "../modified/train_clean.csv"
-DEFAULT_TEST_FILE = "../modified/test_clean.csv"
-DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
-DEFAULT_BASELINE_COL = "wasser_berechnet"
+DEFAULT_TRAIN_FILE = "../modified/train_3_clean.csv"
+DEFAULT_TEST_FILE = "../modified/test_3_clean.csv"
+DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
+DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_OUTPUT_CSV = "feature_signal_drift_report.csv"
 DEFAULT_NUM_BINS = 10
 DEFAULT_MIN_NON_NULL = 100

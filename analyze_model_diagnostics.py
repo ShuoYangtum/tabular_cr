@@ -22,8 +22,8 @@ import pandas as pd
 # Editable defaults
 # =========================
 DEFAULT_FILE = "generated.csv"
-DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
-DEFAULT_BASELINE_COL = "wasser_berechnet"
+DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
+DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_OUTPUT_JSON = "diagnostics_summary.json"
 DEFAULT_SEGMENT_CSV = "diagnostics_by_baseline_bin.csv"

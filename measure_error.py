@@ -35,7 +35,7 @@ import pandas as pd
 # =========================
 # You can edit these values directly and run: python measure_error.py
 DEFAULT_FILE_PATH = "generated.csv"
-DEFAULT_TARGET_COL = "esg-bewertung__input__wasserverbrauch-m3"
+DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_GENERATED_COL = "generated" # wasser_berechnet
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")

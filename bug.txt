@@ -1,30 +1,25 @@
-(gptq) [yangsext@tux100p700 ~/tabular]# python3 train_and_generate.py
-Loading weights: 100%|████████████████████████████████████████████████████████████████████| 398/398 [00:00<00:00, 8952.58it/s]
-The following generation flags are not valid and may be ignored: ['top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
-LLM feature profiling: [##############################] 43/43
-Correction regressor (validation): [##############################] 300/300
-Correction gate classifier (validation, q=0.50): [##############################] 300/300
-Correction gate classifier (validation, q=0.60): [##############################] 300/300
-Correction gate classifier (validation, q=0.70): [##############################] 300/300
-Correction gate classifier (validation, q=0.80): [##############################] 300/300
+(running log)
 Correction regressor (final): [##############################] 300/300
 Correction gate classifier (final): [##############################] 300/300
 === Training Summary ===
-Train file: ../modified/train_clean.csv
-Test file: ../modified/test_clean.csv
+Train file: ../modified/train_3_clean.csv
+Test file: ../modified/test_3_clean.csv
 Output file: generated.csv
-Target column: esg-bewertung__input__wasserverbrauch-m3
-Baseline column: wasser_berechnet
+Target column: esg_firma_esg-bewertung__input__wasserverbrauch-m3
+Baseline column: esg_firma_wasser_berechnet
 Generated column: generated
 Feature semantics mode: llm
 LLM profiling used: yes
-Dropped id-like columns: 0
-Datetime-expanded columns: 8
-Year-transformed columns: 3
+Dropped id-like columns: 19
+Datetime-expanded columns: 19
+Year-transformed columns: 12
 Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 Best alpha (validation): 1.0
 Segmented alpha used: yes
 Baseline alpha bins: 10, min bin rows: 80
+Tuning objective: hybrid
+Validation relative gain: 0.253683
+Fallback to baseline correction: no
 Gate quantile selected: 0.5
 Gate threshold |corr_log| (validation/final): 1.789409/1.793423
 Ratio coverage: 95.00%
@@ -37,50 +32,80 @@ Dropped rows (invalid baseline): 0
 Dropped rows (baseline approximately zero): 222
 Dropped rows (invalid target/baseline ratio): 222
 Dropped rows (invalid target/baseline union): 222
-Feature count: 56
-Numeric features: 44
-Categorical features: 12
-Dropped feature cols (sparse/constant): 20/2
+Feature count: 470
+Numeric features: 350
+Categorical features: 120
+Dropped feature cols (sparse/constant): 102/53
 Dropped feature cols (high-unique id-like): 0
 Test file contains target column: yes (excluded from features)
 Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
 
 === Holdout Metrics (20% validation split) ===
-Gate accuracy : 0.817783
+Gate accuracy : 0.988729
 ---
 Baseline MAE  : 1302061.954890
 Baseline RMSE : 16069673.099473
 Baseline R2   : 0.005419
+Baseline TrimmedRMSE90 : 78988.335263
 ---
-MAE  : 1149128.978272
-RMSE : 15006322.525871
-R2   : 0.132690
+MAE  : 943979.304179
+RMSE : 12021173.165774
+R2   : 0.443430
+TrimmedRMSE90 : 16801.038221
 
 Prediction complete. New file written with generated column.
 
-(gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
-=== Data Cleaning Summary ===
-File: generated.csv
-Total rows: 2759
-Used rows: 2687
-Dropped rows: 72
-Rows with invalid target: 0
-Rows with invalid generated: 72
+(testing results)
+baseline-target
+MAE            : 3254557.031403
+MSE            : 1005331687447731.250000
+RMSE           : 31706965.913624
+MedianAE       : 1051.000000
+P90AE          : 127073.200000
+P95AE          : 857420.800000
+TrimmedMAE90   : 24218.008946
+TrimmedRMSE90  : 93195.812812
+Bias(mean err) : -3060442.728539
+MAPE(%)        : 22622.506531
+MdAPE(%)       : 167.790148
+sMAPE(%)       : 123.399773
+WAPE(%)        : 97.437641
+nMAE/med(|y|)  : 17129.247534
+R2             : 0.054975
 
-=== Error Metrics (target=true, generated=pred) ===
-MAE            : 2920229.933806
-MSE            : 883135987149551.750000
-RMSE           : 29717603.994090
-MedianAE       : 216.080693
-P90AE          : 66141.930286
-P95AE          : 563791.866107
-TrimmedMAE90   : 14446.607749
-TrimmedRMSE90  : 61818.192352
-Bias(mean err) : -2717371.733933
-MAPE(%)        : 17105.634638
-MdAPE(%)       : 88.163489
-sMAPE(%)       : 97.152228
-WAPE(%)        : 96.521613
-nMAE/med(|y|)  : 14601.149669
-R2             : 0.059207
-(gptq) [yangsext@tux100p700 ~/tabular]# 
+ours-target
+MAE            : 2341669.298486
+MSE            : 574688504132293.625000
+RMSE           : 23972661.598836
+MedianAE       : 49.502517
+P90AE          : 28958.534534
+P95AE          : 243086.100021
+TrimmedMAE90   : 6185.580718
+TrimmedRMSE90  : 26808.462762
+Bias(mean err) : -1652408.679237
+MAPE(%)        : 79.687517
+MdAPE(%)       : 33.258611
+sMAPE(%)       : 50.630034
+WAPE(%)        : 77.398596
+nMAE/med(|y|)  : 11708.346492
+R2             : 0.387792
+
+(some issues)
+(gptq) [yangsext@tux100p700 ~/tabular]# python3 analyze_feature_signal_drift.py
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/pandas/core/nanops.py:1632: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  return spearmanr(a, b)[0]
+Done.
+Output: feature_signal_drift_report.csv
+Features analyzed: 556
