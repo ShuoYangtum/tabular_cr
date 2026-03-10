@@ -119,6 +119,33 @@ def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(1 - ss_res / ss_tot)
 
 
+def safe_mdape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    mask = y_true != 0
+    if not np.any(mask):
+        return np.nan
+    return float(np.median(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
+
+
+def safe_wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    denom = np.sum(np.abs(y_true))
+    if denom == 0:
+        return np.nan
+    return float(np.sum(np.abs(y_true - y_pred)) / denom * 100)
+
+
+def trimmed_mean(arr: np.ndarray, trim_ratio: float) -> float:
+    if len(arr) == 0:
+        return np.nan
+    if not (0 <= trim_ratio < 0.5):
+        raise ValueError("trim_ratio must be in [0, 0.5).")
+    lo = int(len(arr) * trim_ratio)
+    hi = len(arr) - lo
+    if hi <= lo:
+        return np.nan
+    arr_sorted = np.sort(arr)
+    return float(np.mean(arr_sorted[lo:hi]))
+
+
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     err = y_pred - y_true
     abs_err = np.abs(err)
@@ -129,8 +156,17 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     medae = float(np.median(abs_err))
     bias = float(np.mean(err))  # positive means over-prediction
     mape = safe_mape(y_true, y_pred)
+    mdape = safe_mdape(y_true, y_pred)
     smape = safe_smape(y_true, y_pred)
+    wape = safe_wape(y_true, y_pred)
     r2 = safe_r2(y_true, y_pred)
+    p90_ae = float(np.quantile(abs_err, 0.90))
+    p95_ae = float(np.quantile(abs_err, 0.95))
+    trimmed_mae_90 = trimmed_mean(abs_err, 0.05)  # drop top/bottom 5%
+    trimmed_rmse_90 = float(np.sqrt(trimmed_mean(err**2, 0.05)))
+
+    target_median = float(np.median(np.abs(y_true)))
+    nmae_by_target_median = float(mae / target_median) if target_median > 0 else np.nan
 
     return {
         "count_used": int(len(y_true)),
@@ -138,9 +174,16 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         "mse": mse,
         "rmse": rmse,
         "median_ae": medae,
+        "p90_ae": p90_ae,
+        "p95_ae": p95_ae,
+        "trimmed_mae_90": trimmed_mae_90,
+        "trimmed_rmse_90": trimmed_rmse_90,
         "bias_mean_error": bias,
         "mape_percent": mape,
+        "mdape_percent": mdape,
         "smape_percent": smape,
+        "wape_percent": wape,
+        "nmae_by_target_median": nmae_by_target_median,
         "r2": r2,
     }
 
@@ -242,9 +285,16 @@ def main() -> int:
     print(f"MSE            : {fmt(metrics['mse'])}")
     print(f"RMSE           : {fmt(metrics['rmse'])}")
     print(f"MedianAE       : {fmt(metrics['median_ae'])}")
+    print(f"P90AE          : {fmt(metrics['p90_ae'])}")
+    print(f"P95AE          : {fmt(metrics['p95_ae'])}")
+    print(f"TrimmedMAE90   : {fmt(metrics['trimmed_mae_90'])}")
+    print(f"TrimmedRMSE90  : {fmt(metrics['trimmed_rmse_90'])}")
     print(f"Bias(mean err) : {fmt(metrics['bias_mean_error'])}")
     print(f"MAPE(%)        : {fmt(metrics['mape_percent'])}")
+    print(f"MdAPE(%)       : {fmt(metrics['mdape_percent'])}")
     print(f"sMAPE(%)       : {fmt(metrics['smape_percent'])}")
+    print(f"WAPE(%)        : {fmt(metrics['wape_percent'])}")
+    print(f"nMAE/med(|y|)  : {fmt(metrics['nmae_by_target_median'])}")
     print(f"R2             : {fmt(metrics['r2'])}")
 
     return 0
