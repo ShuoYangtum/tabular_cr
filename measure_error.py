@@ -36,7 +36,8 @@ import pandas as pd
 # You can edit these values directly and run: python measure_error.py
 DEFAULT_FILE_PATH = "generated.csv"
 DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
-DEFAULT_GENERATED_COL = "generated" # wasser_berechnet
+DEFAULT_GENERATED_COL = "generated" # esg_firma_wasser_berechnet
+DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
@@ -188,25 +189,25 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
-def prepare_data(df: pd.DataFrame, target_col: str, generated_col: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+def prepare_data(df: pd.DataFrame, target_col: str, pred_col: str) -> Tuple[np.ndarray, np.ndarray, dict]:
     if target_col not in df.columns:
         raise KeyError(f"Column '{target_col}' not found. Available columns: {list(df.columns)}")
-    if generated_col not in df.columns:
-        raise KeyError(f"Column '{generated_col}' not found. Available columns: {list(df.columns)}")
+    if pred_col not in df.columns:
+        raise KeyError(f"Column '{pred_col}' not found. Available columns: {list(df.columns)}")
 
     raw_count = len(df)
 
     cleaned = pd.DataFrame(
         {
             "target": df[target_col].map(extract_numeric),
-            "generated": df[generated_col].map(extract_numeric),
+            "pred": df[pred_col].map(extract_numeric),
         }
     )
 
     invalid_target = int(cleaned["target"].isna().sum())
-    invalid_generated = int(cleaned["generated"].isna().sum())
+    invalid_pred = int(cleaned["pred"].isna().sum())
 
-    cleaned = cleaned.dropna(subset=["target", "generated"])
+    cleaned = cleaned.dropna(subset=["target", "pred"])
     used_count = len(cleaned)
     dropped_count = raw_count - used_count
 
@@ -218,10 +219,10 @@ def prepare_data(df: pd.DataFrame, target_col: str, generated_col: str) -> Tuple
         "used_rows": used_count,
         "dropped_rows": dropped_count,
         "invalid_target_rows": invalid_target,
-        "invalid_generated_rows": invalid_generated,
+        "invalid_pred_rows": invalid_pred,
     }
 
-    return cleaned["target"].to_numpy(dtype=float), cleaned["generated"].to_numpy(dtype=float), info
+    return cleaned["target"].to_numpy(dtype=float), cleaned["pred"].to_numpy(dtype=float), info
 
 
 def fmt(v: float) -> str:
@@ -249,6 +250,11 @@ def main() -> int:
         default=DEFAULT_GENERATED_COL,
         help=f"Column name for predicted values (default: {DEFAULT_GENERATED_COL})",
     )
+    parser.add_argument(
+        "--baseline-col",
+        default=DEFAULT_BASELINE_COL,
+        help=f"Column name for baseline values (default: {DEFAULT_BASELINE_COL})",
+    )
     args = parser.parse_args()
 
     if not args.file:
@@ -265,37 +271,85 @@ def main() -> int:
 
     try:
         df = load_table(file_path)
-        y_true, y_pred, info = prepare_data(df, args.target_col, args.generated_col)
-        metrics = compute_metrics(y_true, y_pred)
+        y_true_gen, y_pred_gen, info_gen = prepare_data(df, args.target_col, args.generated_col)
+        y_true_base, y_pred_base, info_base = prepare_data(df, args.target_col, args.baseline_col)
+        metrics_gen = compute_metrics(y_true_gen, y_pred_gen)
+        metrics_base = compute_metrics(y_true_base, y_pred_base)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return 1
 
     print("=== Data Cleaning Summary ===")
     print(f"File: {file_path}")
-    print(f"Total rows: {info['raw_rows']}")
-    print(f"Used rows: {info['used_rows']}")
-    print(f"Dropped rows: {info['dropped_rows']}")
-    print(f"Rows with invalid target: {info['invalid_target_rows']}")
-    print(f"Rows with invalid generated: {info['invalid_generated_rows']}")
+    print(f"Total rows: {info_gen['raw_rows']}")
+    print(
+        f"Generated used/dropped rows: {info_gen['used_rows']}/{info_gen['dropped_rows']} "
+        f"(invalid target/pred: {info_gen['invalid_target_rows']}/{info_gen['invalid_pred_rows']})"
+    )
+    print(
+        f"Baseline used/dropped rows : {info_base['used_rows']}/{info_base['dropped_rows']} "
+        f"(invalid target/pred: {info_base['invalid_target_rows']}/{info_base['invalid_pred_rows']})"
+    )
     print()
 
-    print("=== Error Metrics (target=true, generated=pred) ===")
-    print(f"MAE            : {fmt(metrics['mae'])}")
-    print(f"MSE            : {fmt(metrics['mse'])}")
-    print(f"RMSE           : {fmt(metrics['rmse'])}")
-    print(f"MedianAE       : {fmt(metrics['median_ae'])}")
-    print(f"P90AE          : {fmt(metrics['p90_ae'])}")
-    print(f"P95AE          : {fmt(metrics['p95_ae'])}")
-    print(f"TrimmedMAE90   : {fmt(metrics['trimmed_mae_90'])}")
-    print(f"TrimmedRMSE90  : {fmt(metrics['trimmed_rmse_90'])}")
-    print(f"Bias(mean err) : {fmt(metrics['bias_mean_error'])}")
-    print(f"MAPE(%)        : {fmt(metrics['mape_percent'])}")
-    print(f"MdAPE(%)       : {fmt(metrics['mdape_percent'])}")
-    print(f"sMAPE(%)       : {fmt(metrics['smape_percent'])}")
-    print(f"WAPE(%)        : {fmt(metrics['wape_percent'])}")
-    print(f"nMAE/med(|y|)  : {fmt(metrics['nmae_by_target_median'])}")
-    print(f"R2             : {fmt(metrics['r2'])}")
+    metric_order = [
+        "count_used",
+        "mae",
+        "mse",
+        "rmse",
+        "median_ae",
+        "p90_ae",
+        "p95_ae",
+        "trimmed_mae_90",
+        "trimmed_rmse_90",
+        "bias_mean_error",
+        "mape_percent",
+        "mdape_percent",
+        "smape_percent",
+        "wape_percent",
+        "nmae_by_target_median",
+        "r2",
+    ]
+    metric_name_map = {
+        "count_used": "count_used",
+        "mae": "MAE",
+        "mse": "MSE",
+        "rmse": "RMSE",
+        "median_ae": "MedianAE",
+        "p90_ae": "P90AE",
+        "p95_ae": "P95AE",
+        "trimmed_mae_90": "TrimmedMAE90",
+        "trimmed_rmse_90": "TrimmedRMSE90",
+        "bias_mean_error": "Bias(mean err)",
+        "mape_percent": "MAPE(%)",
+        "mdape_percent": "MdAPE(%)",
+        "smape_percent": "sMAPE(%)",
+        "wape_percent": "WAPE(%)",
+        "nmae_by_target_median": "nMAE/med(|y|)",
+        "r2": "R2",
+    }
+
+    rows = []
+    for key in metric_order:
+        v_gen = metrics_gen[key]
+        v_base = metrics_base[key]
+        if key == "count_used":
+            gen_text = str(int(v_gen))
+            base_text = str(int(v_base))
+        else:
+            gen_text = fmt(v_gen)
+            base_text = fmt(v_base)
+        rows.append(
+            {
+                "metric": metric_name_map[key],
+                f"{args.generated_col} (generated)": gen_text,
+                f"{args.baseline_col} (baseline)": base_text,
+            }
+        )
+
+    table_df = pd.DataFrame(rows)
+    print("=== Error Metrics Comparison (target=true) ===")
+    print(table_df.to_string(index=False))
 
     return 0
 
