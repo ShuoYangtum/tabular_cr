@@ -63,7 +63,7 @@ DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
-DEFAULT_MODEL_TYPE = "tabpfn"
+DEFAULT_MODEL_TYPE = "gbdt"
 DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
@@ -71,7 +71,7 @@ DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.3
+DEFAULT_GATE_QUANTILE = 0.6
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
@@ -79,8 +79,6 @@ DEFAULT_GATE_QUANTILE_CANDIDATES = "0.1,0.2,0.3,0.4,0.5"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
-MIN_GATE_QUANTILE = 0.1
-MAX_GATE_QUANTILE = 0.5
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -1123,11 +1121,7 @@ def main() -> int:
         "--gate-quantile",
         type=float,
         default=DEFAULT_GATE_QUANTILE,
-        help=(
-            "Quantile for gate label on |log-correction|. "
-            f"Must be in [{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}] "
-            f"(default: {DEFAULT_GATE_QUANTILE})."
-        ),
+        help=f"Quantile for gate label on |log-correction| (default: {DEFAULT_GATE_QUANTILE}).",
     )
     parser.add_argument(
         "--gate-quantile-candidates",
@@ -1208,11 +1202,8 @@ def main() -> int:
     if not (0.0 < args.ratio_coverage <= 1.0):
         print("[ERROR] --ratio-coverage must be in (0, 1].")
         return 1
-    if not (MIN_GATE_QUANTILE <= args.gate_quantile <= MAX_GATE_QUANTILE):
-        print(
-            f"[ERROR] --gate-quantile must be in "
-            f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]."
-        )
+    if not (0.0 < args.gate_quantile < 1.0):
+        print("[ERROR] --gate-quantile must be in (0, 1).")
         return 1
     if args.baseline_alpha_bins < 2:
         print("[ERROR] --baseline-alpha-bins must be >= 2.")
@@ -1248,14 +1239,9 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERROR] Invalid --gate-quantile-candidates: {exc}")
         return 1
-    gate_quantile_candidates = [
-        q for q in gate_quantile_candidates if MIN_GATE_QUANTILE <= q <= MAX_GATE_QUANTILE
-    ]
+    gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 < q < 1.0]
     if not gate_quantile_candidates:
-        print(
-            "[ERROR] No valid gate quantile candidates in "
-            f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]."
-        )
+        print("[ERROR] No valid gate quantile candidates in (0,1).")
         return 1
     try:
         resolved_tabpfn_device = resolve_tabpfn_device(args.tabpfn_device)
@@ -1762,10 +1748,6 @@ def main() -> int:
     if np.isfinite(calibration_rel_gain):
         print(f"Post-hoc calibration validation RMSE rel gain: {calibration_rel_gain:.6f}")
     print(f"Post-hoc calibration method: {args.calibration_method}")
-    print(
-        "Gate quantile search range: "
-        f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]"
-    )
     print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
