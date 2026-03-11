@@ -58,7 +58,7 @@ DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
-DEFAULT_RATIO_COVERAGE = 0.95
+DEFAULT_RATIO_COVERAGE = 0.98
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
@@ -72,11 +72,11 @@ DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.5
+DEFAULT_GATE_QUANTILE = 0.2
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.1,0.2,0.3"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.01,0.1,0.2"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
@@ -1492,26 +1492,30 @@ def main() -> int:
         for q in q_candidates:
             gate_thr_cand = float(np.quantile(np.abs(y_corr_tr), q))
             y_gate_tr = (np.abs(y_corr_tr) >= gate_thr_cand).astype(int)
-            gate_pre_cand, gate_model_cand = fit_gbdt_classifier_with_progress(
-                x_train=x_tr,
-                y_train=y_gate_tr,
-                numeric_cols=numeric_cols,
-                categorical_cols=categorical_cols,
-                n_estimators=args.n_estimators,
-                prefix=f"Correction gate classifier (validation, q={q:.2f})",
-                model_type=args.model_type,
-                tabpfn_model_path=tabpfn_clf_model_path_resolved,
-                tabpfn_device=resolved_tabpfn_device,
-            )
-            x_val_gate_t = gate_pre_cand.transform(x_val)
-            gate_pred_val = gate_model_cand.predict(x_val_gate_t)
+            if np.unique(y_gate_tr).size < 2:
+                gate_pred_val = np.full(len(x_val), int(y_gate_tr[0]) if len(y_gate_tr) else 0, dtype=int)
+                gate_prob_val = gate_pred_val.astype(float)
+            else:
+                gate_pre_cand, gate_model_cand = fit_gbdt_classifier_with_progress(
+                    x_train=x_tr,
+                    y_train=y_gate_tr,
+                    numeric_cols=numeric_cols,
+                    categorical_cols=categorical_cols,
+                    n_estimators=args.n_estimators,
+                    prefix=f"Correction gate classifier (validation, q={q:.2f})",
+                    model_type=args.model_type,
+                    tabpfn_model_path=tabpfn_clf_model_path_resolved,
+                    tabpfn_device=resolved_tabpfn_device,
+                )
+                x_val_gate_t = gate_pre_cand.transform(x_val)
+                gate_pred_val = gate_model_cand.predict(x_val_gate_t)
+                if hasattr(gate_model_cand, "predict_proba"):
+                    gate_prob_val = gate_model_cand.predict_proba(x_val_gate_t)[:, 1]
+                else:
+                    gate_prob_val = gate_pred_val.astype(float)
             gate_acc_cand = float(
                 accuracy_score((np.abs(y_corr_val_true) >= gate_thr_cand).astype(int), gate_pred_val)
             )
-            if hasattr(gate_model_cand, "predict_proba"):
-                gate_prob_val = gate_model_cand.predict_proba(x_val_gate_t)[:, 1]
-            else:
-                gate_prob_val = gate_pred_val.astype(float)
 
             alpha_global, metrics_global = pick_best_alpha(
                 y_true=y_tar_val,
@@ -1617,25 +1621,29 @@ def main() -> int:
                 fold_gate_thresholds.append(gate_thr_fold)
                 y_gate_tr_fold = (np.abs(y_corr_tr_fold) >= gate_thr_fold).astype(int)
                 gate_true_oof[va_idx] = (np.abs(y_corr_va_fold) >= gate_thr_fold).astype(int)
-
-                gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
-                    x_train=x_tr_fold,
-                    y_train=y_gate_tr_fold,
-                    numeric_cols=numeric_cols,
-                    categorical_cols=categorical_cols,
-                    n_estimators=args.n_estimators,
-                    prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
-                    model_type=args.model_type,
-                    tabpfn_model_path=tabpfn_clf_model_path_resolved,
-                    tabpfn_device=resolved_tabpfn_device,
-                )
-                x_va_gate_t = gate_pre_fold.transform(x_va_fold)
-                gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
-                gate_pred_oof[va_idx] = gate_pred_fold
-                if hasattr(gate_model_fold, "predict_proba"):
-                    gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
+                if np.unique(y_gate_tr_fold).size < 2:
+                    constant_gate = int(y_gate_tr_fold[0]) if len(y_gate_tr_fold) else 0
+                    gate_pred_oof[va_idx] = constant_gate
+                    gate_prob_oof[va_idx] = float(constant_gate)
                 else:
-                    gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
+                    gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
+                        x_train=x_tr_fold,
+                        y_train=y_gate_tr_fold,
+                        numeric_cols=numeric_cols,
+                        categorical_cols=categorical_cols,
+                        n_estimators=args.n_estimators,
+                        prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
+                        model_type=args.model_type,
+                        tabpfn_model_path=tabpfn_clf_model_path_resolved,
+                        tabpfn_device=resolved_tabpfn_device,
+                    )
+                    x_va_gate_t = gate_pre_fold.transform(x_va_fold)
+                    gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
+                    gate_pred_oof[va_idx] = gate_pred_fold
+                    if hasattr(gate_model_fold, "predict_proba"):
+                        gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
+                    else:
+                        gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
 
             if not np.isfinite(gate_prob_oof).all():
                 print("[ERROR] OOF gate probability contains NaN/Inf.")
@@ -1762,25 +1770,34 @@ def main() -> int:
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
-    gate_pre_final, gate_model_final = fit_gbdt_classifier_with_progress(
-        x_train=X_train,
-        y_train=y_gate_full,
-        numeric_cols=numeric_cols,
-        categorical_cols=categorical_cols,
-        n_estimators=args.n_estimators,
-        prefix="Correction gate classifier (final)",
-        model_type=args.model_type,
-        tabpfn_model_path=tabpfn_clf_model_path_resolved,
-        tabpfn_device=resolved_tabpfn_device,
-    )
+    gate_constant_class_final: int | None = None
+    if np.unique(y_gate_full).size < 2:
+        gate_pre_final = None
+        gate_model_final = None
+        gate_constant_class_final = int(y_gate_full[0]) if len(y_gate_full) else 0
+    else:
+        gate_pre_final, gate_model_final = fit_gbdt_classifier_with_progress(
+            x_train=X_train,
+            y_train=y_gate_full,
+            numeric_cols=numeric_cols,
+            categorical_cols=categorical_cols,
+            n_estimators=args.n_estimators,
+            prefix="Correction gate classifier (final)",
+            model_type=args.model_type,
+            tabpfn_model_path=tabpfn_clf_model_path_resolved,
+            tabpfn_device=resolved_tabpfn_device,
+        )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
     corr_pred_test = corr_model_final.predict(x_test_corr_t)
-    x_test_gate_t = gate_pre_final.transform(X_test)
-    if hasattr(gate_model_final, "predict_proba"):
-        gate_prob_test = gate_model_final.predict_proba(x_test_gate_t)[:, 1]
+    if gate_constant_class_final is not None:
+        gate_prob_test = np.full(X_test.shape[0], float(gate_constant_class_final), dtype=float)
     else:
-        gate_prob_test = gate_model_final.predict(x_test_gate_t).astype(float)
+        x_test_gate_t = gate_pre_final.transform(X_test)
+        if hasattr(gate_model_final, "predict_proba"):
+            gate_prob_test = gate_model_final.predict_proba(x_test_gate_t)[:, 1]
+        else:
+            gate_prob_test = gate_model_final.predict(x_test_gate_t).astype(float)
 
     baseline_test = test_df[baseline_col].map(extract_numeric).to_numpy(dtype=float)
     if use_segment_alpha:
