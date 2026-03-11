@@ -43,6 +43,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import KFold
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -71,14 +72,15 @@ DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.6
+DEFAULT_GATE_QUANTILE = 0.5
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.1,0.2,0.3,0.4,0.5"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.1,0.2,0.3"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
+DEFAULT_DISABLE_OOF_TUNING = False
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -1178,6 +1180,12 @@ def main() -> int:
         default=DEFAULT_OOF_FOLDS,
         help=f"KFold splits for OOF tuning stage (default: {DEFAULT_OOF_FOLDS}).",
     )
+    parser.add_argument(
+        "--disable-oof-tuning",
+        action="store_true",
+        default=DEFAULT_DISABLE_OOF_TUNING,
+        help="Disable OOF tuning and use single 20% holdout validation instead.",
+    )
     args = parser.parse_args()
 
     train_path = Path(args.train_file)
@@ -1226,7 +1234,7 @@ def main() -> int:
     if args.llm_max_new_tokens <= 0:
         print("[ERROR] --llm-max-new-tokens must be positive.")
         return 1
-    if args.oof_folds < 2:
+    if (not args.disable_oof_tuning) and args.oof_folds < 2:
         print("[ERROR] --oof-folds must be >= 2.")
         return 1
     try:
@@ -1429,148 +1437,254 @@ def main() -> int:
     feature_cols = list(X_train.columns)
     numeric_cols, categorical_cols = infer_feature_types(X_train, args.numeric_like_threshold)
 
-    # OOF validation using conservative correction framework.
     n_train = len(y_train_target)
-    if args.oof_folds > n_train:
-        print(f"[ERROR] --oof-folds ({args.oof_folds}) cannot exceed valid train rows ({n_train}).")
-        return 1
-    oof_splitter = KFold(n_splits=args.oof_folds, shuffle=True, random_state=42)
     ratio_lower_val = ratio_lower
     ratio_upper_val = ratio_upper
-
-    # OOF correction predictions in signed-log residual space.
     y_corr_full_true = signed_log1p(y_train_target) - signed_log1p(baseline_train)
-    corr_pred_oof = np.full(n_train, np.nan, dtype=float)
-    fold_splits = list(oof_splitter.split(X_train))
-    for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
-        x_tr_fold = X_train.iloc[tr_idx]
-        x_va_fold = X_train.iloc[va_idx]
-        y_corr_tr_fold = y_corr_full_true[tr_idx]
-        corr_pre_fold, corr_model_fold = fit_gbdt_with_progress(
-            x_train=x_tr_fold,
-            y_train=y_corr_tr_fold,
+    validation_mode_label = ""
+
+    if args.disable_oof_tuning:
+        validation_mode_label = "Holdout (20% split)"
+        all_idx = np.arange(n_train)
+        tr_idx, va_idx = train_test_split(all_idx, test_size=0.2, random_state=42)
+        x_tr = X_train.iloc[tr_idx]
+        x_val = X_train.iloc[va_idx]
+        y_tar_tr = y_train_target[tr_idx]
+        y_tar_val = y_train_target[va_idx]
+        base_tr = baseline_train[tr_idx]
+        base_val = baseline_train[va_idx]
+        y_corr_tr = y_corr_full_true[tr_idx]
+        y_corr_val_true = y_corr_full_true[va_idx]
+
+        ratio_tr = y_train_ratio[tr_idx]
+        ratio_lower_val = float(np.quantile(ratio_tr, lower_q))
+        ratio_upper_val = float(np.quantile(ratio_tr, upper_q))
+        if ratio_lower_val > ratio_upper_val:
+            ratio_lower_val, ratio_upper_val = ratio_upper_val, ratio_lower_val
+
+        corr_pre_val, corr_model_val = fit_gbdt_with_progress(
+            x_train=x_tr,
+            y_train=y_corr_tr,
             numeric_cols=numeric_cols,
             categorical_cols=categorical_cols,
             n_estimators=args.n_estimators,
-            prefix=f"Correction regressor (OOF fold {fold_idx}/{args.oof_folds})",
+            prefix="Correction regressor (validation)",
             model_type=args.model_type,
             tabpfn_model_path=tabpfn_reg_model_path_resolved,
             tabpfn_device=resolved_tabpfn_device,
         )
-        x_va_corr_t = corr_pre_fold.transform(x_va_fold)
-        corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
+        x_val_corr_t = corr_pre_val.transform(x_val)
+        corr_pred_val = corr_model_val.predict(x_val_corr_t)
 
-    if not np.isfinite(corr_pred_oof).all():
-        print("[ERROR] OOF correction prediction contains NaN/Inf.")
-        return 1
+        baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
+        baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
+        baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
+        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
 
-    # Gate classifier with optional automatic quantile tuning (all OOF).
-    y_tar_val = y_train_target
-    base_val = baseline_train
-    corr_pred_val = corr_pred_oof
-    baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
-    baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
-    baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
-    baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
+        if args.disable_auto_gate_quantile:
+            q_candidates = [args.gate_quantile]
+        else:
+            q_candidates = sorted(set(gate_quantile_candidates + [args.gate_quantile]))
 
-    if args.disable_auto_gate_quantile:
-        q_candidates = [args.gate_quantile]
-    else:
-        q_candidates = sorted(set(gate_quantile_candidates + [args.gate_quantile]))
+        best_val_package: Dict[str, Any] = {}
+        best_val_rmse = float("inf")
 
-    best_val_package: Dict[str, Any] = {}
-    best_val_rmse = float("inf")
-
-    for q in q_candidates:
-        gate_prob_oof = np.full(n_train, np.nan, dtype=float)
-        gate_pred_oof = np.zeros(n_train, dtype=int)
-        gate_true_oof = np.zeros(n_train, dtype=int)
-        fold_gate_thresholds: List[float] = []
-
-        for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
-            x_tr_fold = X_train.iloc[tr_idx]
-            x_va_fold = X_train.iloc[va_idx]
-            y_corr_tr_fold = y_corr_full_true[tr_idx]
-            y_corr_va_fold = y_corr_full_true[va_idx]
-
-            gate_thr_fold = float(np.quantile(np.abs(y_corr_tr_fold), q))
-            fold_gate_thresholds.append(gate_thr_fold)
-            y_gate_tr_fold = (np.abs(y_corr_tr_fold) >= gate_thr_fold).astype(int)
-            gate_true_oof[va_idx] = (np.abs(y_corr_va_fold) >= gate_thr_fold).astype(int)
-
-            gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
-                x_train=x_tr_fold,
-                y_train=y_gate_tr_fold,
+        for q in q_candidates:
+            gate_thr_cand = float(np.quantile(np.abs(y_corr_tr), q))
+            y_gate_tr = (np.abs(y_corr_tr) >= gate_thr_cand).astype(int)
+            gate_pre_cand, gate_model_cand = fit_gbdt_classifier_with_progress(
+                x_train=x_tr,
+                y_train=y_gate_tr,
                 numeric_cols=numeric_cols,
                 categorical_cols=categorical_cols,
                 n_estimators=args.n_estimators,
-                prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
+                prefix=f"Correction gate classifier (validation, q={q:.2f})",
                 model_type=args.model_type,
                 tabpfn_model_path=tabpfn_clf_model_path_resolved,
                 tabpfn_device=resolved_tabpfn_device,
             )
-            x_va_gate_t = gate_pre_fold.transform(x_va_fold)
-            gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
-            gate_pred_oof[va_idx] = gate_pred_fold
-            if hasattr(gate_model_fold, "predict_proba"):
-                gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
+            x_val_gate_t = gate_pre_cand.transform(x_val)
+            gate_pred_val = gate_model_cand.predict(x_val_gate_t)
+            gate_acc_cand = float(
+                accuracy_score((np.abs(y_corr_val_true) >= gate_thr_cand).astype(int), gate_pred_val)
+            )
+            if hasattr(gate_model_cand, "predict_proba"):
+                gate_prob_val = gate_model_cand.predict_proba(x_val_gate_t)[:, 1]
             else:
-                gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
+                gate_prob_val = gate_pred_val.astype(float)
 
-        if not np.isfinite(gate_prob_oof).all():
-            print("[ERROR] OOF gate probability contains NaN/Inf.")
+            alpha_global, metrics_global = pick_best_alpha(
+                y_true=y_tar_val,
+                base=base_val,
+                corr_pred=corr_pred_val,
+                gate_prob=gate_prob_val,
+                alpha_candidates=alpha_candidates,
+                ratio_lower=ratio_lower_val,
+                ratio_upper=ratio_upper_val,
+                objective=args.tune_objective,
+            )
+            alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
+                y_true=y_tar_val,
+                base=base_val,
+                corr_pred=corr_pred_val,
+                gate_prob=gate_prob_val,
+                alpha_candidates=alpha_candidates,
+                ratio_lower=ratio_lower_val,
+                ratio_upper=ratio_upper_val,
+                n_bins=args.baseline_alpha_bins,
+                min_bin_rows=args.min_bin_rows,
+                objective=args.tune_objective,
+            )
+            use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
+                metrics_global, args.tune_objective
+            )
+            selected_metrics = metrics_segment if use_segment else metrics_global
+            selected_score = objective_value(selected_metrics, args.tune_objective)
+            if selected_score < best_val_rmse:
+                best_val_rmse = selected_score
+                best_val_package = {
+                    "q": q,
+                    "gate_thr": gate_thr_cand,
+                    "gate_acc": gate_acc_cand,
+                    "gate_prob_val": gate_prob_val,
+                    "alpha_global": alpha_global,
+                    "alpha_edges": alpha_edges_cand,
+                    "alpha_by_bin": alpha_by_bin_cand,
+                    "use_segment_alpha": use_segment,
+                    "metrics_global": metrics_global,
+                    "metrics_segment": metrics_segment,
+                    "metrics_selected": selected_metrics,
+                    "selected_score": selected_score,
+                }
+    else:
+        validation_mode_label = f"OOF ({args.oof_folds}-fold)"
+        if args.oof_folds > n_train:
+            print(f"[ERROR] --oof-folds ({args.oof_folds}) cannot exceed valid train rows ({n_train}).")
+            return 1
+        oof_splitter = KFold(n_splits=args.oof_folds, shuffle=True, random_state=42)
+        fold_splits = list(oof_splitter.split(X_train))
+        corr_pred_oof = np.full(n_train, np.nan, dtype=float)
+        for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
+            x_tr_fold = X_train.iloc[tr_idx]
+            x_va_fold = X_train.iloc[va_idx]
+            y_corr_tr_fold = y_corr_full_true[tr_idx]
+            corr_pre_fold, corr_model_fold = fit_gbdt_with_progress(
+                x_train=x_tr_fold,
+                y_train=y_corr_tr_fold,
+                numeric_cols=numeric_cols,
+                categorical_cols=categorical_cols,
+                n_estimators=args.n_estimators,
+                prefix=f"Correction regressor (OOF fold {fold_idx}/{args.oof_folds})",
+                model_type=args.model_type,
+                tabpfn_model_path=tabpfn_reg_model_path_resolved,
+                tabpfn_device=resolved_tabpfn_device,
+            )
+            x_va_corr_t = corr_pre_fold.transform(x_va_fold)
+            corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
+
+        if not np.isfinite(corr_pred_oof).all():
+            print("[ERROR] OOF correction prediction contains NaN/Inf.")
             return 1
 
-        gate_acc_cand = float(accuracy_score(gate_true_oof, gate_pred_oof))
+        y_tar_val = y_train_target
+        base_val = baseline_train
+        corr_pred_val = corr_pred_oof
+        baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
+        baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
+        baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
+        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
 
-        # Global alpha
-        alpha_global, metrics_global = pick_best_alpha(
-            y_true=y_tar_val,
-            base=base_val,
-            corr_pred=corr_pred_val,
-            gate_prob=gate_prob_oof,
-            alpha_candidates=alpha_candidates,
-            ratio_lower=ratio_lower_val,
-            ratio_upper=ratio_upper_val,
-            objective=args.tune_objective,
-        )
+        if args.disable_auto_gate_quantile:
+            q_candidates = [args.gate_quantile]
+        else:
+            q_candidates = sorted(set(gate_quantile_candidates + [args.gate_quantile]))
 
-        # Segmented alpha by baseline bins
-        alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
-            y_true=y_tar_val,
-            base=base_val,
-            corr_pred=corr_pred_val,
-            gate_prob=gate_prob_oof,
-            alpha_candidates=alpha_candidates,
-            ratio_lower=ratio_lower_val,
-            ratio_upper=ratio_upper_val,
-            n_bins=args.baseline_alpha_bins,
-            min_bin_rows=args.min_bin_rows,
-            objective=args.tune_objective,
-        )
+        best_val_package = {}
+        best_val_rmse = float("inf")
+        for q in q_candidates:
+            gate_prob_oof = np.full(n_train, np.nan, dtype=float)
+            gate_pred_oof = np.zeros(n_train, dtype=int)
+            gate_true_oof = np.zeros(n_train, dtype=int)
+            fold_gate_thresholds: List[float] = []
 
-        use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
-            metrics_global, args.tune_objective
-        )
-        selected_metrics = metrics_segment if use_segment else metrics_global
-        selected_score = objective_value(selected_metrics, args.tune_objective)
+            for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
+                x_tr_fold = X_train.iloc[tr_idx]
+                x_va_fold = X_train.iloc[va_idx]
+                y_corr_tr_fold = y_corr_full_true[tr_idx]
+                y_corr_va_fold = y_corr_full_true[va_idx]
 
-        if selected_score < best_val_rmse:
-            best_val_rmse = selected_score
-            best_val_package = {
-                "q": q,
-                "gate_thr": float(np.median(fold_gate_thresholds)),
-                "gate_acc": gate_acc_cand,
-                "gate_prob_val": gate_prob_oof,
-                "alpha_global": alpha_global,
-                "alpha_edges": alpha_edges_cand,
-                "alpha_by_bin": alpha_by_bin_cand,
-                "use_segment_alpha": use_segment,
-                "metrics_global": metrics_global,
-                "metrics_segment": metrics_segment,
-                "metrics_selected": selected_metrics,
-                "selected_score": selected_score,
-            }
+                gate_thr_fold = float(np.quantile(np.abs(y_corr_tr_fold), q))
+                fold_gate_thresholds.append(gate_thr_fold)
+                y_gate_tr_fold = (np.abs(y_corr_tr_fold) >= gate_thr_fold).astype(int)
+                gate_true_oof[va_idx] = (np.abs(y_corr_va_fold) >= gate_thr_fold).astype(int)
+
+                gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
+                    x_train=x_tr_fold,
+                    y_train=y_gate_tr_fold,
+                    numeric_cols=numeric_cols,
+                    categorical_cols=categorical_cols,
+                    n_estimators=args.n_estimators,
+                    prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
+                    model_type=args.model_type,
+                    tabpfn_model_path=tabpfn_clf_model_path_resolved,
+                    tabpfn_device=resolved_tabpfn_device,
+                )
+                x_va_gate_t = gate_pre_fold.transform(x_va_fold)
+                gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
+                gate_pred_oof[va_idx] = gate_pred_fold
+                if hasattr(gate_model_fold, "predict_proba"):
+                    gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
+                else:
+                    gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
+
+            if not np.isfinite(gate_prob_oof).all():
+                print("[ERROR] OOF gate probability contains NaN/Inf.")
+                return 1
+
+            gate_acc_cand = float(accuracy_score(gate_true_oof, gate_pred_oof))
+            alpha_global, metrics_global = pick_best_alpha(
+                y_true=y_tar_val,
+                base=base_val,
+                corr_pred=corr_pred_val,
+                gate_prob=gate_prob_oof,
+                alpha_candidates=alpha_candidates,
+                ratio_lower=ratio_lower_val,
+                ratio_upper=ratio_upper_val,
+                objective=args.tune_objective,
+            )
+            alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
+                y_true=y_tar_val,
+                base=base_val,
+                corr_pred=corr_pred_val,
+                gate_prob=gate_prob_oof,
+                alpha_candidates=alpha_candidates,
+                ratio_lower=ratio_lower_val,
+                ratio_upper=ratio_upper_val,
+                n_bins=args.baseline_alpha_bins,
+                min_bin_rows=args.min_bin_rows,
+                objective=args.tune_objective,
+            )
+            use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
+                metrics_global, args.tune_objective
+            )
+            selected_metrics = metrics_segment if use_segment else metrics_global
+            selected_score = objective_value(selected_metrics, args.tune_objective)
+            if selected_score < best_val_rmse:
+                best_val_rmse = selected_score
+                best_val_package = {
+                    "q": q,
+                    "gate_thr": float(np.median(fold_gate_thresholds)),
+                    "gate_acc": gate_acc_cand,
+                    "gate_prob_val": gate_prob_oof,
+                    "alpha_global": alpha_global,
+                    "alpha_edges": alpha_edges_cand,
+                    "alpha_by_bin": alpha_by_bin_cand,
+                    "use_segment_alpha": use_segment,
+                    "metrics_global": metrics_global,
+                    "metrics_segment": metrics_segment,
+                    "metrics_selected": selected_metrics,
+                    "selected_score": selected_score,
+                }
 
     selected_gate_quantile = float(best_val_package["q"])
     gate_thr = float(best_val_package["gate_thr"])
@@ -1742,6 +1856,7 @@ def main() -> int:
     print(f"Segmented alpha used: {'yes' if use_segment_alpha else 'no'}")
     print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
     print(f"Tuning objective: {args.tune_objective}")
+    print(f"Validation mode: {validation_mode_label}")
     print(f"Validation relative gain: {rel_gain:.6f}")
     print(f"Fallback to baseline correction: {'yes' if fallback_to_baseline else 'no'}")
     print(f"Post-hoc calibration enabled/used: {'yes' if args.enable_posthoc_calibration else 'no'}/{ 'yes' if calibration_used else 'no'}")
@@ -1790,7 +1905,7 @@ def main() -> int:
         )
     print()
 
-    print(f"=== OOF Metrics ({args.oof_folds}-fold validation) ===")
+    print(f"=== Validation Metrics ({validation_mode_label}) ===")
     print(f"Gate accuracy : {gate_acc_val:.6f}")
     print("---")
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
