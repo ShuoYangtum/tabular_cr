@@ -42,7 +42,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -71,13 +71,16 @@ DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.6
+DEFAULT_GATE_QUANTILE = 0.3
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.5,0.6,0.7,0.8"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.1,0.2,0.3,0.4,0.5"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
+DEFAULT_OOF_FOLDS = 3
+MIN_GATE_QUANTILE = 0.1
+MAX_GATE_QUANTILE = 0.5
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -1120,7 +1123,11 @@ def main() -> int:
         "--gate-quantile",
         type=float,
         default=DEFAULT_GATE_QUANTILE,
-        help=f"Quantile for gate label on |log-correction| (default: {DEFAULT_GATE_QUANTILE}).",
+        help=(
+            "Quantile for gate label on |log-correction|. "
+            f"Must be in [{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}] "
+            f"(default: {DEFAULT_GATE_QUANTILE})."
+        ),
     )
     parser.add_argument(
         "--gate-quantile-candidates",
@@ -1171,6 +1178,12 @@ def main() -> int:
             f"(default: {DEFAULT_MIN_FEATURE_NON_NULL_RATIO})."
         ),
     )
+    parser.add_argument(
+        "--oof-folds",
+        type=int,
+        default=DEFAULT_OOF_FOLDS,
+        help=f"KFold splits for OOF tuning stage (default: {DEFAULT_OOF_FOLDS}).",
+    )
     args = parser.parse_args()
 
     train_path = Path(args.train_file)
@@ -1195,8 +1208,11 @@ def main() -> int:
     if not (0.0 < args.ratio_coverage <= 1.0):
         print("[ERROR] --ratio-coverage must be in (0, 1].")
         return 1
-    if not (0.0 < args.gate_quantile < 1.0):
-        print("[ERROR] --gate-quantile must be in (0, 1).")
+    if not (MIN_GATE_QUANTILE <= args.gate_quantile <= MAX_GATE_QUANTILE):
+        print(
+            f"[ERROR] --gate-quantile must be in "
+            f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]."
+        )
         return 1
     if args.baseline_alpha_bins < 2:
         print("[ERROR] --baseline-alpha-bins must be >= 2.")
@@ -1219,6 +1235,9 @@ def main() -> int:
     if args.llm_max_new_tokens <= 0:
         print("[ERROR] --llm-max-new-tokens must be positive.")
         return 1
+    if args.oof_folds < 2:
+        print("[ERROR] --oof-folds must be >= 2.")
+        return 1
     try:
         alpha_candidates = parse_alpha_grid(args.alpha_grid)
     except Exception as exc:
@@ -1229,9 +1248,14 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERROR] Invalid --gate-quantile-candidates: {exc}")
         return 1
-    gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 < q < 1.0]
+    gate_quantile_candidates = [
+        q for q in gate_quantile_candidates if MIN_GATE_QUANTILE <= q <= MAX_GATE_QUANTILE
+    ]
     if not gate_quantile_candidates:
-        print("[ERROR] No valid gate quantile candidates in (0,1).")
+        print(
+            "[ERROR] No valid gate quantile candidates in "
+            f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]."
+        )
         return 1
     try:
         resolved_tabpfn_device = resolve_tabpfn_device(args.tabpfn_device)
@@ -1419,38 +1443,45 @@ def main() -> int:
     feature_cols = list(X_train.columns)
     numeric_cols, categorical_cols = infer_feature_types(X_train, args.numeric_like_threshold)
 
-    # Holdout validation using conservative correction framework.
-    x_tr, x_val, y_ratio_tr, _, y_tar_tr, y_tar_val, base_tr, base_val = train_test_split(
-        X_train,
-        y_train_ratio,
-        y_train_target,
-        baseline_train,
-        test_size=0.2,
-        random_state=42,
-    )
-    ratio_lower_val = float(np.quantile(y_ratio_tr, lower_q))
-    ratio_upper_val = float(np.quantile(y_ratio_tr, upper_q))
-    if ratio_lower_val > ratio_upper_val:
-        ratio_lower_val, ratio_upper_val = ratio_upper_val, ratio_lower_val
+    # OOF validation using conservative correction framework.
+    n_train = len(y_train_target)
+    if args.oof_folds > n_train:
+        print(f"[ERROR] --oof-folds ({args.oof_folds}) cannot exceed valid train rows ({n_train}).")
+        return 1
+    oof_splitter = KFold(n_splits=args.oof_folds, shuffle=True, random_state=42)
+    ratio_lower_val = ratio_lower
+    ratio_upper_val = ratio_upper
 
-    # Regressor target: correction in signed-log space
-    y_corr_tr = signed_log1p(y_tar_tr) - signed_log1p(base_tr)
-    y_corr_val_true = signed_log1p(y_tar_val) - signed_log1p(base_val)
-    corr_pre_val, corr_model_val = fit_gbdt_with_progress(
-        x_train=x_tr,
-        y_train=y_corr_tr,
-        numeric_cols=numeric_cols,
-        categorical_cols=categorical_cols,
-        n_estimators=args.n_estimators,
-        prefix="Correction regressor (validation)",
-        model_type=args.model_type,
-        tabpfn_model_path=tabpfn_reg_model_path_resolved,
-        tabpfn_device=resolved_tabpfn_device,
-    )
-    x_val_corr_t = corr_pre_val.transform(x_val)
-    corr_pred_val = corr_model_val.predict(x_val_corr_t)
+    # OOF correction predictions in signed-log residual space.
+    y_corr_full_true = signed_log1p(y_train_target) - signed_log1p(baseline_train)
+    corr_pred_oof = np.full(n_train, np.nan, dtype=float)
+    fold_splits = list(oof_splitter.split(X_train))
+    for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
+        x_tr_fold = X_train.iloc[tr_idx]
+        x_va_fold = X_train.iloc[va_idx]
+        y_corr_tr_fold = y_corr_full_true[tr_idx]
+        corr_pre_fold, corr_model_fold = fit_gbdt_with_progress(
+            x_train=x_tr_fold,
+            y_train=y_corr_tr_fold,
+            numeric_cols=numeric_cols,
+            categorical_cols=categorical_cols,
+            n_estimators=args.n_estimators,
+            prefix=f"Correction regressor (OOF fold {fold_idx}/{args.oof_folds})",
+            model_type=args.model_type,
+            tabpfn_model_path=tabpfn_reg_model_path_resolved,
+            tabpfn_device=resolved_tabpfn_device,
+        )
+        x_va_corr_t = corr_pre_fold.transform(x_va_fold)
+        corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
 
-    # Gate classifier with optional automatic quantile tuning.
+    if not np.isfinite(corr_pred_oof).all():
+        print("[ERROR] OOF correction prediction contains NaN/Inf.")
+        return 1
+
+    # Gate classifier with optional automatic quantile tuning (all OOF).
+    y_tar_val = y_train_target
+    base_val = baseline_train
+    corr_pred_val = corr_pred_oof
     baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
     baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
     baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
@@ -1465,35 +1496,53 @@ def main() -> int:
     best_val_rmse = float("inf")
 
     for q in q_candidates:
-        gate_thr_cand = float(np.quantile(np.abs(y_corr_tr), q))
-        y_gate_tr = (np.abs(y_corr_tr) >= gate_thr_cand).astype(int)
-        gate_pre_cand, gate_model_cand = fit_gbdt_classifier_with_progress(
-            x_train=x_tr,
-            y_train=y_gate_tr,
-            numeric_cols=numeric_cols,
-            categorical_cols=categorical_cols,
-            n_estimators=args.n_estimators,
-            prefix=f"Correction gate classifier (validation, q={q:.2f})",
-            model_type=args.model_type,
-            tabpfn_model_path=tabpfn_clf_model_path_resolved,
-            tabpfn_device=resolved_tabpfn_device,
-        )
-        x_val_gate_t = gate_pre_cand.transform(x_val)
-        gate_pred_val = gate_model_cand.predict(x_val_gate_t)
-        gate_acc_cand = float(
-            accuracy_score((np.abs(y_corr_val_true) >= gate_thr_cand).astype(int), gate_pred_val)
-        )
-        if hasattr(gate_model_cand, "predict_proba"):
-            gate_prob_val = gate_model_cand.predict_proba(x_val_gate_t)[:, 1]
-        else:
-            gate_prob_val = gate_pred_val.astype(float)
+        gate_prob_oof = np.full(n_train, np.nan, dtype=float)
+        gate_pred_oof = np.zeros(n_train, dtype=int)
+        gate_true_oof = np.zeros(n_train, dtype=int)
+        fold_gate_thresholds: List[float] = []
+
+        for fold_idx, (tr_idx, va_idx) in enumerate(fold_splits, start=1):
+            x_tr_fold = X_train.iloc[tr_idx]
+            x_va_fold = X_train.iloc[va_idx]
+            y_corr_tr_fold = y_corr_full_true[tr_idx]
+            y_corr_va_fold = y_corr_full_true[va_idx]
+
+            gate_thr_fold = float(np.quantile(np.abs(y_corr_tr_fold), q))
+            fold_gate_thresholds.append(gate_thr_fold)
+            y_gate_tr_fold = (np.abs(y_corr_tr_fold) >= gate_thr_fold).astype(int)
+            gate_true_oof[va_idx] = (np.abs(y_corr_va_fold) >= gate_thr_fold).astype(int)
+
+            gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
+                x_train=x_tr_fold,
+                y_train=y_gate_tr_fold,
+                numeric_cols=numeric_cols,
+                categorical_cols=categorical_cols,
+                n_estimators=args.n_estimators,
+                prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
+                model_type=args.model_type,
+                tabpfn_model_path=tabpfn_clf_model_path_resolved,
+                tabpfn_device=resolved_tabpfn_device,
+            )
+            x_va_gate_t = gate_pre_fold.transform(x_va_fold)
+            gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
+            gate_pred_oof[va_idx] = gate_pred_fold
+            if hasattr(gate_model_fold, "predict_proba"):
+                gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
+            else:
+                gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
+
+        if not np.isfinite(gate_prob_oof).all():
+            print("[ERROR] OOF gate probability contains NaN/Inf.")
+            return 1
+
+        gate_acc_cand = float(accuracy_score(gate_true_oof, gate_pred_oof))
 
         # Global alpha
         alpha_global, metrics_global = pick_best_alpha(
             y_true=y_tar_val,
             base=base_val,
             corr_pred=corr_pred_val,
-            gate_prob=gate_prob_val,
+            gate_prob=gate_prob_oof,
             alpha_candidates=alpha_candidates,
             ratio_lower=ratio_lower_val,
             ratio_upper=ratio_upper_val,
@@ -1505,7 +1554,7 @@ def main() -> int:
             y_true=y_tar_val,
             base=base_val,
             corr_pred=corr_pred_val,
-            gate_prob=gate_prob_val,
+            gate_prob=gate_prob_oof,
             alpha_candidates=alpha_candidates,
             ratio_lower=ratio_lower_val,
             ratio_upper=ratio_upper_val,
@@ -1524,11 +1573,9 @@ def main() -> int:
             best_val_rmse = selected_score
             best_val_package = {
                 "q": q,
-                "gate_thr": gate_thr_cand,
+                "gate_thr": float(np.median(fold_gate_thresholds)),
                 "gate_acc": gate_acc_cand,
-                "gate_pre": gate_pre_cand,
-                "gate_model": gate_model_cand,
-                "gate_prob_val": gate_prob_val,
+                "gate_prob_val": gate_prob_oof,
                 "alpha_global": alpha_global,
                 "alpha_edges": alpha_edges_cand,
                 "alpha_by_bin": alpha_by_bin_cand,
@@ -1715,6 +1762,10 @@ def main() -> int:
     if np.isfinite(calibration_rel_gain):
         print(f"Post-hoc calibration validation RMSE rel gain: {calibration_rel_gain:.6f}")
     print(f"Post-hoc calibration method: {args.calibration_method}")
+    print(
+        "Gate quantile search range: "
+        f"[{MIN_GATE_QUANTILE}, {MAX_GATE_QUANTILE}]"
+    )
     print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
@@ -1757,7 +1808,7 @@ def main() -> int:
         )
     print()
 
-    print("=== Holdout Metrics (20% validation split) ===")
+    print(f"=== OOF Metrics ({args.oof_folds}-fold validation) ===")
     print(f"Gate accuracy : {gate_acc_val:.6f}")
     print("---")
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
