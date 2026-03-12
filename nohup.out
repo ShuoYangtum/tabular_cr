@@ -8,15 +8,6 @@ Correction regressor (OOF fold 2/3): [##############################] 1/1
 Correction regressor (OOF fold 3/3): [------------------------------] 0/1
 Correction regressor (OOF fold 3/3): [##############################] 1/1
 
-Correction gate classifier (OOF fold 1/3, q=0.30): [------------------------------] 0/1
-Correction gate classifier (OOF fold 1/3, q=0.30): [##############################] 1/1
-
-Correction gate classifier (OOF fold 2/3, q=0.30): [------------------------------] 0/1
-Correction gate classifier (OOF fold 2/3, q=0.30): [##############################] 1/1
-
-Correction gate classifier (OOF fold 3/3, q=0.30): [------------------------------] 0/1
-Correction gate classifier (OOF fold 3/3, q=0.30): [##############################] 1/1
-
 Correction gate classifier (OOF fold 1/3, q=0.40): [------------------------------] 0/1
 Correction gate classifier (OOF fold 1/3, q=0.40): [##############################] 1/1
 
@@ -80,21 +71,22 @@ Feature semantic cache file: feature_semantic_cache.json
 Dropped id-like columns: 19
 Datetime-expanded columns: 19
 Year-transformed columns: 12
-Alpha candidates: [0.0, 0.8, 1.0, 1.2, 2.0]
-Best alpha (validation): 1.2
-Segmented alpha used: yes
+Alpha candidates: [0.0, 0.4, 0.6, 0.8, 1.0]
+Best alpha (validation): 1.0
+Segmented alpha used: no
+Segmented alpha enabled: no
 Baseline alpha bins: 12, min bin rows: 60
-Tuning objective: hybrid
+Tuning objective: mae
 Validation mode: OOF (3-fold)
-Validation relative gain: 0.384900
+Validation relative gain: 0.294145
 Fallback to baseline correction: no
 Post-hoc calibration enabled/used: no/no
 Post-hoc calibration method: segmented_bias
 Segmented bias calibration bins/min_rows: 10/60
-Gate quantile selected: 0.4
-Gate mean correction prob (validation): 0.602375 (preferred range: 0.10-0.65)
-Validation objective (raw/penalized): 691324.425787/691324.425787
-Gate threshold |corr_log| (validation/final): 1.203324/1.208304
+Gate quantile selected: 0.5
+Gate mean correction prob (validation): 0.501933 (preferred range: 0.10-0.55)
+Validation objective (raw/penalized): 977153.472364/977153.472364
+Gate threshold |corr_log| (validation/final): 1.738618/1.725490
 Ratio coverage: 93.00%
 Ratio clip range (validation): [0.006125, 16.003891]
 Ratio clip range (final): [0.006125, 16.003891]
@@ -117,17 +109,17 @@ Test file contains target column: yes (excluded from features)
 Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
 
 === Validation Metrics (OOF (3-fold)) ===
-Gate accuracy : 0.990402
+Gate accuracy : 0.989506
 ---
 Baseline MAE  : 1384355.026133
 Baseline RMSE : 16943213.091632
 Baseline R2   : 0.024313
 Baseline TrimmedRMSE90 : 82193.388193
 ---
-MAE  : 859900.404380
-RMSE : 12669100.295061
-R2   : 0.454480
-TrimmedRMSE90 : 17020.511412
+MAE  : 977153.472364
+RMSE : 13092494.070515
+R2   : 0.417409
+TrimmedRMSE90 : 16507.618897
 
 Prediction complete. New file written with generated column.
 
@@ -144,18 +136,18 @@ Rows filtered by zero value (target/baseline): 78/0
 === Error Metrics Comparison (target=true) ===
         metric  generated (generated) esg_firma_wasser_berechnet (baseline)
     count_used                   2609                                  2609
-           MAE         2098529.376209                        3025381.696079
-           MSE 446872288640944.000000                902561948944706.625000
-          RMSE        21139354.026104                       30042668.805296
-      MedianAE              10.999586                           1197.000000
-         P90AE           22289.531519                         134116.800000
-         P95AE          208997.366273                         927763.200000
-  TrimmedMAE90            4707.228147                          26756.292597
- TrimmedRMSE90           21003.057085                         101377.905874
-Bias(mean err)        -1224640.033541                       -2820166.151579
-       MAPE(%)             163.943850                          23080.035410
-      MdAPE(%)               7.692004                            180.737246
-      sMAPE(%)              29.519433                            119.553613
-       WAPE(%)              67.348664                             97.094383
- nMAE/med(|y|)            9733.438665                          14032.382635
-            R2               0.537637                              0.066151
+           MAE         2472531.228034                        3025381.696079
+           MSE 606149349708525.375000                902561948944706.625000
+          RMSE        24620100.521901                       30042668.805296
+      MedianAE              19.999902                           1197.000000
+         P90AE           21408.783454                         134116.800000
+         P95AE          226988.973135                         927763.200000
+  TrimmedMAE90            5066.170820                          26756.292597
+ TrimmedRMSE90           23176.138698                         101377.905874
+Bias(mean err)        -1675270.973970                       -2820166.151579
+       MAPE(%)             184.544008                          23080.035410
+      MdAPE(%)              11.925815                            180.737246
+      sMAPE(%)              38.495896                            119.553613
+       WAPE(%)              79.351606                             97.094383
+ nMAE/med(|y|)           11468.141132                          14032.382635
+            R2               0.372838                              0.066151
