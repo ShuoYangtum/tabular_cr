@@ -69,7 +69,7 @@ DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
 DEFAULT_TABPFN_N_ESTIMATORS = 32
-DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
+DEFAULT_TABPFN_FIT_MODE = "fit_with_cache"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
 DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
 DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS = True
@@ -88,6 +88,8 @@ DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
 DEFAULT_DISABLE_OOF_TUNING = False
+DEFAULT_ENABLE_AUTO_FEATURE_PRUNING = True
+DEFAULT_AUTO_PRUNE_MAX_FEATURES = 500
 
 # If an object column has >= this ratio of parseable numeric values, treat it as numeric.
 NUMERIC_LIKE_THRESHOLD = 0.85
@@ -1063,6 +1065,45 @@ def drop_sparse_or_constant_features(
     )
 
 
+def auto_prune_features_by_signal(
+    x_train: pd.DataFrame,
+    x_test: pd.DataFrame,
+    y_train: np.ndarray,
+    max_features: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    if max_features <= 0:
+        raise ValueError("max_features must be positive")
+    n_features = x_train.shape[1]
+    if n_features <= max_features:
+        return x_train, x_test, {"dropped_auto_prune_cols": 0, "kept_after_auto_prune": n_features}
+
+    y_s = pd.Series(np.asarray(y_train, dtype=float), index=x_train.index)
+    scores: List[Tuple[str, float]] = []
+    for col in x_train.columns:
+        s = x_train[col]
+        if pd.api.types.is_numeric_dtype(s):
+            x = pd.to_numeric(s, errors="coerce")
+        else:
+            x = pd.Series(pd.factorize(s.astype("string").fillna("__nan__"), sort=False)[0], index=s.index, dtype=float)
+        if x.nunique(dropna=True) <= 1:
+            scores.append((col, 0.0))
+            continue
+        corr = x.corr(y_s, method="spearman")
+        score = float(abs(corr)) if corr is not None and np.isfinite(corr) else 0.0
+        scores.append((col, score))
+
+    scores.sort(key=lambda kv: kv[1], reverse=True)
+    keep_cols = [c for c, _ in scores[:max_features]]
+    return (
+        x_train[keep_cols].copy(),
+        x_test[keep_cols].copy(),
+        {
+            "dropped_auto_prune_cols": n_features - len(keep_cols),
+            "kept_after_auto_prune": len(keep_cols),
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train robust tree model and generate target predictions.")
     parser.add_argument("--train-file", default=DEFAULT_TRAIN_FILE, help="Training CSV path")
@@ -1318,6 +1359,24 @@ def main() -> int:
         default=DEFAULT_DISABLE_OOF_TUNING,
         help="Disable OOF tuning and use single 20% holdout validation instead.",
     )
+    parser.add_argument(
+        "--enable-auto-feature-pruning",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_AUTO_FEATURE_PRUNING,
+        help=(
+            "Auto-prune features when feature count exceeds threshold "
+            f"(default: {DEFAULT_ENABLE_AUTO_FEATURE_PRUNING})."
+        ),
+    )
+    parser.add_argument(
+        "--auto-prune-max-features",
+        type=int,
+        default=DEFAULT_AUTO_PRUNE_MAX_FEATURES,
+        help=(
+            "Maximum feature count after auto-pruning "
+            f"(default: {DEFAULT_AUTO_PRUNE_MAX_FEATURES})."
+        ),
+    )
     args = parser.parse_args()
 
     train_path = Path(args.train_file)
@@ -1377,6 +1436,9 @@ def main() -> int:
         return 1
     if args.tabpfn_preprocessing_jobs <= 0:
         print("[ERROR] --tabpfn-preprocessing-jobs must be positive.")
+        return 1
+    if args.auto_prune_max_features <= 0:
+        print("[ERROR] --auto-prune-max-features must be positive.")
         return 1
     if (not args.disable_oof_tuning) and args.oof_folds < 2:
         print("[ERROR] --oof-folds must be >= 2.")
@@ -1583,6 +1645,19 @@ def main() -> int:
         min_non_null_rows=200,
     )
     feature_drop_summary.update(id_like_drop_summary)
+    if args.enable_auto_feature_pruning:
+        X_train, X_test, auto_prune_summary = auto_prune_features_by_signal(
+            x_train=X_train,
+            x_test=X_test,
+            y_train=y_train_target,
+            max_features=args.auto_prune_max_features,
+        )
+    else:
+        auto_prune_summary = {
+            "dropped_auto_prune_cols": 0,
+            "kept_after_auto_prune": int(X_train.shape[1]),
+        }
+    feature_drop_summary.update(auto_prune_summary)
     if X_train.shape[1] == 0:
         print("[ERROR] No usable feature columns left after sparse/constant filtering.")
         return 1
@@ -2091,6 +2166,10 @@ def main() -> int:
     print(f"Dropped rows (invalid target/baseline ratio): {dropped_invalid_ratio_rows}")
     print(f"Dropped rows (invalid target/baseline union): {dropped_train_rows}")
     print(f"Feature count: {len(feature_cols)}")
+    print(
+        "Auto feature pruning enabled/max_features: "
+        f"{'yes' if args.enable_auto_feature_pruning else 'no'}/{args.auto_prune_max_features}"
+    )
     print(f"Numeric features: {len(numeric_cols)}")
     print(f"Categorical features: {len(categorical_cols)}")
     print(
@@ -2101,6 +2180,10 @@ def main() -> int:
     print(
         "Dropped feature cols (high-unique id-like): "
         f"{feature_drop_summary['dropped_high_unique_id_like_cols']}"
+    )
+    print(
+        "Dropped feature cols (auto-prune): "
+        f"{feature_drop_summary['dropped_auto_prune_cols']}"
     )
     if test_has_target_col:
         print("Test file contains target column: yes (excluded from features)")
