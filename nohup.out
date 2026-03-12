@@ -8,15 +8,6 @@ Correction regressor (OOF fold 2/3): [##############################] 1/1
 Correction regressor (OOF fold 3/3): [------------------------------] 0/1
 Correction regressor (OOF fold 3/3): [##############################] 1/1
 
-Correction gate classifier (OOF fold 1/3, q=0.10): [------------------------------] 0/1
-Correction gate classifier (OOF fold 1/3, q=0.10): [##############################] 1/1
-
-Correction gate classifier (OOF fold 2/3, q=0.10): [------------------------------] 0/1
-Correction gate classifier (OOF fold 2/3, q=0.10): [##############################] 1/1
-
-Correction gate classifier (OOF fold 3/3, q=0.10): [------------------------------] 0/1
-Correction gate classifier (OOF fold 3/3, q=0.10): [##############################] 1/1
-
 Correction gate classifier (OOF fold 1/3, q=0.20): [------------------------------] 0/1
 Correction gate classifier (OOF fold 1/3, q=0.20): [##############################] 1/1
 
@@ -26,6 +17,24 @@ Correction gate classifier (OOF fold 2/3, q=0.20): [############################
 Correction gate classifier (OOF fold 3/3, q=0.20): [------------------------------] 0/1
 Correction gate classifier (OOF fold 3/3, q=0.20): [##############################] 1/1
 
+Correction gate classifier (OOF fold 1/3, q=0.30): [------------------------------] 0/1
+Correction gate classifier (OOF fold 1/3, q=0.30): [##############################] 1/1
+
+Correction gate classifier (OOF fold 2/3, q=0.30): [------------------------------] 0/1
+Correction gate classifier (OOF fold 2/3, q=0.30): [##############################] 1/1
+
+Correction gate classifier (OOF fold 3/3, q=0.30): [------------------------------] 0/1
+Correction gate classifier (OOF fold 3/3, q=0.30): [##############################] 1/1
+
+Correction gate classifier (OOF fold 1/3, q=0.40): [------------------------------] 0/1
+Correction gate classifier (OOF fold 1/3, q=0.40): [##############################] 1/1
+
+Correction gate classifier (OOF fold 2/3, q=0.40): [------------------------------] 0/1
+Correction gate classifier (OOF fold 2/3, q=0.40): [##############################] 1/1
+
+Correction gate classifier (OOF fold 3/3, q=0.40): [------------------------------] 0/1
+Correction gate classifier (OOF fold 3/3, q=0.40): [##############################] 1/1
+
 Correction gate classifier (OOF fold 1/3, q=0.50): [------------------------------] 0/1
 Correction gate classifier (OOF fold 1/3, q=0.50): [##############################] 1/1
 
@@ -34,6 +43,15 @@ Correction gate classifier (OOF fold 2/3, q=0.50): [############################
 
 Correction gate classifier (OOF fold 3/3, q=0.50): [------------------------------] 0/1
 Correction gate classifier (OOF fold 3/3, q=0.50): [##############################] 1/1
+
+Correction gate classifier (OOF fold 1/3, q=0.60): [------------------------------] 0/1
+Correction gate classifier (OOF fold 1/3, q=0.60): [##############################] 1/1
+
+Correction gate classifier (OOF fold 2/3, q=0.60): [------------------------------] 0/1
+Correction gate classifier (OOF fold 2/3, q=0.60): [##############################] 1/1
+
+Correction gate classifier (OOF fold 3/3, q=0.60): [------------------------------] 0/1
+Correction gate classifier (OOF fold 3/3, q=0.60): [##############################] 1/1
 
 Correction regressor (final): [------------------------------] 0/1
 Correction regressor (final): [##############################] 1/1
@@ -51,7 +69,7 @@ Model type: tabpfn
 TabPFN regressor weights: ../modified/TabPFN-v2-reg/tabpfn-v2-regressor-09gpqh39.ckpt
 TabPFN classifier weights: ../modified/TabPFN-v2-clf/tabpfn-v2-classifier-finetuned-gn2p4bpt-xp6f0iqb.ckpt
 TabPFN device (requested/resolved): auto/cuda
-TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs/ignore_limits): 2/fit_with_cache/auto/4/True
+TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs/ignore_limits): 2/fit_preprocessors/auto/1/True
 TabPFN telemetry: disabled
 Torch CUDA runtime: import_ok=True, torch=2.4.1+cu121, built_with_cuda=12.1, cuda_available=True, cuda_device_count=1
 CUDA devices: ['NVIDIA L40S']
@@ -68,16 +86,18 @@ Segmented alpha used: no
 Baseline alpha bins: 10, min bin rows: 80
 Tuning objective: hybrid
 Validation mode: OOF (3-fold)
-Validation relative gain: 0.501920
+Validation relative gain: 0.412362
 Fallback to baseline correction: no
 Post-hoc calibration enabled/used: no/no
 Post-hoc calibration method: segmented_bias
 Segmented bias calibration bins/min_rows: 10/60
-Gate quantile selected: 0.1
-Gate threshold |corr_log| (validation/final): 0.051162/0.051162
-Ratio coverage: 98.00%
-Ratio clip range (validation): [0.001673, 139.219517]
-Ratio clip range (final): [0.001673, 139.219517]
+Gate quantile selected: 0.2
+Gate mean correction prob (validation): 0.800576 (preferred range: 0.10-0.80)
+Validation objective (raw/penalized): 660459.685590/662740.394856
+Gate threshold |corr_log| (validation/final): 0.333628/0.334908
+Ratio coverage: 95.00%
+Ratio clip range (validation): [0.004400, 23.809524]
+Ratio clip range (final): [0.004400, 23.809524]
 Original train rows: 8206
 Valid train rows used: 7814
 Dropped rows (invalid target): 0
@@ -97,23 +117,21 @@ Test file contains target column: yes (excluded from features)
 Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
 
 === Validation Metrics (OOF (3-fold)) ===
-Gate accuracy : 0.994241
+Gate accuracy : 0.993985
 ---
 Baseline MAE  : 1384355.026133
 Baseline RMSE : 16943213.091632
 Baseline R2   : 0.024313
 Baseline TrimmedRMSE90 : 82193.388193
 ---
-MAE  : 699387.491866
-RMSE : 10900460.520732
-R2   : 0.596161
-TrimmedRMSE90 : 1468.648140
+MAE  : 825014.614205
+RMSE : 12132144.678009
+R2   : 0.499742
+TrimmedRMSE90 : 2239.971129
 
 Prediction complete. New file written with generated column.
 
-
 (gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
-[1]+  Done                    nohup python3 train_and_generate.py
 /home/yangsext/tabular/measure_error.py:90: DtypeWarning: Columns (298,301,302,303,308,310,427,428,429,431) have mixed types. Specify dtype option on import or set low_memory=False.
   return pd.read_csv(file_path)
 === Data Cleaning Summary ===
@@ -127,18 +145,19 @@ Rows filtered by zero value (target/baseline): 78/0
 === Error Metrics Comparison (target=true) ===
         metric  generated (generated) esg_firma_wasser_berechnet (baseline)
     count_used                   2609                                  2609
-           MAE         2026392.186749                        3025381.696079
-           MSE 512674703693175.875000                902561948944706.625000
-          RMSE        22642321.075658                       30042668.805296
-      MedianAE               3.918258                           1197.000000
-         P90AE            1201.999372                         134116.800000
-         P95AE           20819.349682                         927763.200000
-  TrimmedMAE90             372.720832                          26756.292597
- TrimmedRMSE90            1798.449729                         101377.905874
-Bias(mean err)         -529661.677891                       -2820166.151579
-       MAPE(%)              48.157199                          23080.035410
-      MdAPE(%)               1.977339                            180.737246
-      sMAPE(%)               7.470643                            119.553613
-       WAPE(%)              65.033546                             97.094383
- nMAE/med(|y|)            9398.850588                          14032.382635
-            R2               0.469553                              0.066151
+           MAE         1905410.094291                        3025381.696079
+           MSE 456960142271197.750000                902561948944706.625000
+          RMSE        21376626.073148                       30042668.805296
+      MedianAE               4.999983                           1197.000000
+         P90AE            2501.887115                         134116.800000
+         P95AE           43118.567789                         927763.200000
+  TrimmedMAE90             686.493319                          26756.292597
+ TrimmedRMSE90            3385.516605                         101377.905874
+Bias(mean err)        -1151362.738248                       -2820166.151579
+       MAPE(%)             105.453650                          23080.035410
+      MdAPE(%)               2.502258                            180.737246
+      sMAPE(%)              11.272959                            119.553613
+       WAPE(%)              61.150835                             97.094383
+ nMAE/med(|y|)            8837.709157                          14032.382635
+            R2               0.527199                              0.066151
+(gptq) [yangsext@tux100p700 ~/tabular]# 
