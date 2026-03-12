@@ -68,15 +68,19 @@ DEFAULT_MODEL_TYPE = "gbdt"
 DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
+DEFAULT_TABPFN_N_ESTIMATORS = 32
+DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
+DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
+DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "isotonic"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.2
+DEFAULT_GATE_QUANTILE = 0.3
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.01,0.1,0.2"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0,0.1,0.2，0.3，0.5"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
@@ -205,14 +209,14 @@ def load_csv(path: Path) -> pd.DataFrame:
 def build_preprocessor(numeric_cols: List[str], categorical_cols: List[str]) -> ColumnTransformer:
     numeric_pipe = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
             ("clip", QuantileClipper(low_q=0.01, high_q=0.99)),
         ]
     )
 
     categorical_pipe = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("imputer", SimpleImputer(strategy="most_frequent", add_indicator=True)),
             (
                 "encoder",
                 OrdinalEncoder(
@@ -598,6 +602,10 @@ def fit_gbdt_with_progress(
     model_type: str,
     tabpfn_model_path: str | None = None,
     tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
+    tabpfn_n_estimators: int = DEFAULT_TABPFN_N_ESTIMATORS,
+    tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
+    tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
+    tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -612,10 +620,23 @@ def fit_gbdt_with_progress(
             ) from exc
         model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="reg")
         resolved_device = resolve_tabpfn_device(tabpfn_device)
-        model_kwargs: Dict[str, Any] = {"device": resolved_device}
+        model_kwargs: Dict[str, Any] = {
+            "device": resolved_device,
+            "n_estimators": int(tabpfn_n_estimators),
+            "fit_mode": tabpfn_fit_mode,
+            "inference_precision": tabpfn_inference_precision,
+            "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
+        }
         if model_path:
             model_kwargs["model_path"] = model_path
-        model = TabPFNRegressor(**model_kwargs)
+        try:
+            model = TabPFNRegressor(**model_kwargs)
+        except TypeError:
+            # Compatibility fallback for older TabPFN versions.
+            fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
+            if model_path:
+                fallback_kwargs["model_path"] = model_path
+            model = TabPFNRegressor(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -643,6 +664,10 @@ def fit_gbdt_classifier_with_progress(
     model_type: str,
     tabpfn_model_path: str | None = None,
     tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
+    tabpfn_n_estimators: int = DEFAULT_TABPFN_N_ESTIMATORS,
+    tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
+    tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
+    tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -657,10 +682,22 @@ def fit_gbdt_classifier_with_progress(
             ) from exc
         model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="clf")
         resolved_device = resolve_tabpfn_device(tabpfn_device)
-        model_kwargs: Dict[str, Any] = {"device": resolved_device}
+        model_kwargs: Dict[str, Any] = {
+            "device": resolved_device,
+            "n_estimators": int(tabpfn_n_estimators),
+            "fit_mode": tabpfn_fit_mode,
+            "inference_precision": tabpfn_inference_precision,
+            "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
+        }
         if model_path:
             model_kwargs["model_path"] = model_path
-        model = TabPFNClassifier(**model_kwargs)
+        try:
+            model = TabPFNClassifier(**model_kwargs)
+        except TypeError:
+            fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
+            if model_path:
+                fallback_kwargs["model_path"] = model_path
+            model = TabPFNClassifier(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
         model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
@@ -1047,6 +1084,38 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--tabpfn-n-estimators",
+        type=int,
+        default=DEFAULT_TABPFN_N_ESTIMATORS,
+        help=(
+            "TabPFN ensemble estimators. Higher values improve quality and GPU usage "
+            f"but increase runtime/memory (default: {DEFAULT_TABPFN_N_ESTIMATORS})."
+        ),
+    )
+    parser.add_argument(
+        "--tabpfn-fit-mode",
+        default=DEFAULT_TABPFN_FIT_MODE,
+        choices=["low_memory", "fit_preprocessors", "fit_with_cache", "batched"],
+        help=f"TabPFN fit_mode (default: {DEFAULT_TABPFN_FIT_MODE}).",
+    )
+    parser.add_argument(
+        "--tabpfn-inference-precision",
+        default=DEFAULT_TABPFN_INFERENCE_PRECISION,
+        help=(
+            "TabPFN inference precision: auto/autocast/torch.float32/... "
+            f"(default: {DEFAULT_TABPFN_INFERENCE_PRECISION})."
+        ),
+    )
+    parser.add_argument(
+        "--tabpfn-preprocessing-jobs",
+        type=int,
+        default=DEFAULT_TABPFN_PREPROCESSING_JOBS,
+        help=(
+            "TabPFN n_preprocessing_jobs for CPU-side preprocessing "
+            f"(default: {DEFAULT_TABPFN_PREPROCESSING_JOBS})."
+        ),
+    )
+    parser.add_argument(
         "--enable-posthoc-calibration",
         action="store_true",
         default=DEFAULT_ENABLE_POSTHOC_CALIBRATION,
@@ -1233,6 +1302,12 @@ def main() -> int:
         return 1
     if args.llm_max_new_tokens <= 0:
         print("[ERROR] --llm-max-new-tokens must be positive.")
+        return 1
+    if args.tabpfn_n_estimators <= 0:
+        print("[ERROR] --tabpfn-n-estimators must be positive.")
+        return 1
+    if args.tabpfn_preprocessing_jobs <= 0:
+        print("[ERROR] --tabpfn-preprocessing-jobs must be positive.")
         return 1
     if (not args.disable_oof_tuning) and args.oof_folds < 2:
         print("[ERROR] --oof-folds must be >= 2.")
@@ -1480,6 +1555,10 @@ def main() -> int:
             model_type=args.model_type,
             tabpfn_model_path=tabpfn_reg_model_path_resolved,
             tabpfn_device=resolved_tabpfn_device,
+            tabpfn_n_estimators=args.tabpfn_n_estimators,
+            tabpfn_fit_mode=args.tabpfn_fit_mode,
+            tabpfn_inference_precision=args.tabpfn_inference_precision,
+            tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
         )
         x_val_corr_t = corr_pre_val.transform(x_val)
         corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1514,6 +1593,10 @@ def main() -> int:
                     model_type=args.model_type,
                     tabpfn_model_path=tabpfn_clf_model_path_resolved,
                     tabpfn_device=resolved_tabpfn_device,
+                    tabpfn_n_estimators=args.tabpfn_n_estimators,
+                    tabpfn_fit_mode=args.tabpfn_fit_mode,
+                    tabpfn_inference_precision=args.tabpfn_inference_precision,
+                    tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
                 )
                 x_val_gate_t = gate_pre_cand.transform(x_val)
                 gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -1590,6 +1673,10 @@ def main() -> int:
                 model_type=args.model_type,
                 tabpfn_model_path=tabpfn_reg_model_path_resolved,
                 tabpfn_device=resolved_tabpfn_device,
+                tabpfn_n_estimators=args.tabpfn_n_estimators,
+                tabpfn_fit_mode=args.tabpfn_fit_mode,
+                tabpfn_inference_precision=args.tabpfn_inference_precision,
+                tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
             )
             x_va_corr_t = corr_pre_fold.transform(x_va_fold)
             corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
@@ -1644,6 +1731,10 @@ def main() -> int:
                         model_type=args.model_type,
                         tabpfn_model_path=tabpfn_clf_model_path_resolved,
                         tabpfn_device=resolved_tabpfn_device,
+                        tabpfn_n_estimators=args.tabpfn_n_estimators,
+                        tabpfn_fit_mode=args.tabpfn_fit_mode,
+                        tabpfn_inference_precision=args.tabpfn_inference_precision,
+                        tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
                     )
                     x_va_gate_t = gate_pre_fold.transform(x_va_fold)
                     gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
@@ -1775,6 +1866,10 @@ def main() -> int:
         model_type=args.model_type,
         tabpfn_model_path=tabpfn_reg_model_path_resolved,
         tabpfn_device=resolved_tabpfn_device,
+        tabpfn_n_estimators=args.tabpfn_n_estimators,
+        tabpfn_fit_mode=args.tabpfn_fit_mode,
+        tabpfn_inference_precision=args.tabpfn_inference_precision,
+        tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -1794,6 +1889,10 @@ def main() -> int:
             model_type=args.model_type,
             tabpfn_model_path=tabpfn_clf_model_path_resolved,
             tabpfn_device=resolved_tabpfn_device,
+            tabpfn_n_estimators=args.tabpfn_n_estimators,
+            tabpfn_fit_mode=args.tabpfn_fit_mode,
+            tabpfn_inference_precision=args.tabpfn_inference_precision,
+            tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
         )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -1858,6 +1957,11 @@ def main() -> int:
         print(f"TabPFN regressor weights: {tabpfn_reg_model_path_resolved}")
         print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
         print(f"TabPFN device (requested/resolved): {args.tabpfn_device}/{resolved_tabpfn_device}")
+        print(
+            "TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs): "
+            f"{args.tabpfn_n_estimators}/{args.tabpfn_fit_mode}/"
+            f"{args.tabpfn_inference_precision}/{args.tabpfn_preprocessing_jobs}"
+        )
         print("TabPFN telemetry: disabled")
         print(
             "Torch CUDA runtime: "
