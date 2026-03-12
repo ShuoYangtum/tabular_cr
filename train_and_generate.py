@@ -19,6 +19,7 @@ Supports:
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -69,9 +70,9 @@ DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
 DEFAULT_TABPFN_N_ESTIMATORS = 2
-DEFAULT_TABPFN_FIT_MODE = "fit_with_cache"
+DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
-DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
+DEFAULT_TABPFN_PREPROCESSING_JOBS = 1
 DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS = True
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "segmented_bias"
@@ -648,11 +649,11 @@ def fit_gbdt_with_progress(
                 fallback_kwargs["model_path"] = model_path
             model = TabPFNRegressor(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
+        release_runtime_memory()
         try:
             model.fit(x_train_t, y_train)
-        except OSError as exc:
-            msg = str(exc).lower()
-            is_mem_oom = ("cannot allocate memory" in msg) or ("errno 12" in msg)
+        except Exception as exc:
+            is_mem_oom = is_memory_oom_error(exc)
             can_retry = int(tabpfn_preprocessing_jobs) != 1
             if (not is_mem_oom) or (not can_retry):
                 raise
@@ -660,6 +661,7 @@ def fit_gbdt_with_progress(
                 f"\n[WARN] TabPFN regressor OOM during fit ({exc}). "
                 "Retrying with n_preprocessing_jobs=1."
             )
+            release_runtime_memory()
             retry_kwargs = dict(model_kwargs)
             retry_kwargs["n_preprocessing_jobs"] = 1
             try:
@@ -670,6 +672,7 @@ def fit_gbdt_with_progress(
                     retry_fallback_kwargs["model_path"] = model_path
                 model = TabPFNRegressor(**retry_fallback_kwargs)
             model.fit(x_train_t, y_train)
+        release_runtime_memory()
         print_progress_bar(1, 1, prefix=prefix)
         return preprocessor, model
 
@@ -732,11 +735,11 @@ def fit_gbdt_classifier_with_progress(
                 fallback_kwargs["model_path"] = model_path
             model = TabPFNClassifier(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
+        release_runtime_memory()
         try:
             model.fit(x_train_t, y_train)
-        except OSError as exc:
-            msg = str(exc).lower()
-            is_mem_oom = ("cannot allocate memory" in msg) or ("errno 12" in msg)
+        except Exception as exc:
+            is_mem_oom = is_memory_oom_error(exc)
             can_retry = int(tabpfn_preprocessing_jobs) != 1
             if (not is_mem_oom) or (not can_retry):
                 raise
@@ -744,6 +747,7 @@ def fit_gbdt_classifier_with_progress(
                 f"\n[WARN] TabPFN classifier OOM during fit ({exc}). "
                 "Retrying with n_preprocessing_jobs=1."
             )
+            release_runtime_memory()
             retry_kwargs = dict(model_kwargs)
             retry_kwargs["n_preprocessing_jobs"] = 1
             try:
@@ -754,6 +758,7 @@ def fit_gbdt_classifier_with_progress(
                     retry_fallback_kwargs["model_path"] = model_path
                 model = TabPFNClassifier(**retry_fallback_kwargs)
             model.fit(x_train_t, y_train)
+        release_runtime_memory()
         print_progress_bar(1, 1, prefix=prefix)
         return preprocessor, model
 
@@ -928,6 +933,30 @@ def configure_tabpfn_runtime(disable_telemetry: bool = True) -> None:
     os.environ.setdefault("TABPFN_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("POSTHOG_DISABLED", "1")
     os.environ.setdefault("DO_NOT_TRACK", "1")
+
+
+def is_memory_oom_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        ("cannot allocate memory" in msg)
+        or ("errno 12" in msg)
+        or ("out of memory" in msg)
+        or ("cuda out of memory" in msg)
+    )
+
+
+def release_runtime_memory() -> None:
+    """Best-effort memory cleanup between heavy fits."""
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+    except Exception:
+        return
 
 
 def resolve_tabpfn_device(device_setting: str) -> str | list[str]:
@@ -1935,6 +1964,9 @@ def main() -> int:
             )
             x_va_corr_t = corr_pre_fold.transform(x_va_fold)
             corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
+            del corr_pre_fold, corr_model_fold, x_va_corr_t
+            if args.model_type == "tabpfn":
+                release_runtime_memory()
 
         if not np.isfinite(corr_pred_oof).all():
             print("[ERROR] OOF correction prediction contains NaN/Inf.")
@@ -1999,6 +2031,9 @@ def main() -> int:
                         gate_prob_oof[va_idx] = gate_model_fold.predict_proba(x_va_gate_t)[:, 1]
                     else:
                         gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
+                    del gate_pre_fold, gate_model_fold, x_va_gate_t
+                    if args.model_type == "tabpfn":
+                        release_runtime_memory()
 
             if not np.isfinite(gate_prob_oof).all():
                 print("[ERROR] OOF gate probability contains NaN/Inf.")
