@@ -68,7 +68,7 @@ DEFAULT_MODEL_TYPE = "tabpfn"
 DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
-DEFAULT_TABPFN_N_ESTIMATORS = 8
+DEFAULT_TABPFN_N_ESTIMATORS = 2
 DEFAULT_TABPFN_FIT_MODE = "fit_with_cache"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
 DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
@@ -78,7 +78,7 @@ DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
-DEFAULT_ALPHA_GRID = "0,0.2,0.4,0.6,0.8,1.0"
+DEFAULT_ALPHA_GRID = "0,0.8,1.0,1.2,2.0"
 DEFAULT_GATE_QUANTILE = 0.5
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
@@ -87,7 +87,7 @@ DEFAULT_GATE_QUANTILE_CANDIDATES = "0,0.1,0.2,0.5"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
-DEFAULT_DISABLE_OOF_TUNING = True
+DEFAULT_DISABLE_OOF_TUNING = False
 DEFAULT_ENABLE_AUTO_FEATURE_PRUNING = True
 DEFAULT_AUTO_PRUNE_MAX_FEATURES = 500
 
@@ -787,8 +787,8 @@ def parse_alpha_grid(grid_text: str) -> List[float]:
     out: List[float] = []
     for p in parts:
         v = float(p)
-        if not (0.0 <= v <= 1.0):
-            raise ValueError(f"alpha must be in [0,1], got {v}")
+        if not (0.0 <= v <= 2.0):
+            raise ValueError(f"alpha must be in [0,2], got {v}")
         out.append(v)
     out = sorted(set(out))
     return out
@@ -829,7 +829,7 @@ def objective_value(metrics: Dict[str, float], objective: str) -> float:
     if objective == "trimmed_rmse90":
         return float(metrics["trimmed_rmse90"])
     # hybrid objective
-    return float(0.6 * metrics["rmse"] + 0.4 * metrics["trimmed_rmse90"])
+    return float(0.8 * metrics["mae"] + 0.2 * metrics["trimmed_rmse90"])
 
 
 def fit_posthoc_calibrator(
