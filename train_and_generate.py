@@ -73,8 +73,10 @@ DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
 DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
-DEFAULT_CALIBRATION_METHOD = "isotonic"
+DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
+DEFAULT_CALIBRATION_BINS = 10
+DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
 DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
 DEFAULT_GATE_QUANTILE = 0.3
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
@@ -782,12 +784,35 @@ def objective_value(metrics: Dict[str, float], objective: str) -> float:
 
 
 def fit_posthoc_calibrator(
-    y_true: np.ndarray, y_pred: np.ndarray, method: str
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    base: np.ndarray,
+    method: str,
+    bins: int,
+    min_bin_rows: int,
 ) -> tuple[object, np.ndarray]:
     if method == "isotonic":
         calibrator = IsotonicRegression(out_of_bounds="clip")
         calibrator.fit(y_pred, y_true)
         y_cal = calibrator.predict(y_pred)
+        return calibrator, y_cal
+    if method == "segmented_bias":
+        global_bias = float(np.mean(y_true - y_pred))
+        q = np.linspace(0.0, 1.0, num=max(int(bins), 2) + 1)
+        edges = np.quantile(base, q)
+        edges = np.unique(edges)
+        if len(edges) <= 1:
+            calibrator = {"type": "segmented_bias", "edges": np.array([-np.inf, np.inf]), "bias_by_bin": np.array([global_bias])}
+            return calibrator, y_pred + global_bias
+        bin_idx = np.digitize(base, edges[1:-1], right=False)
+        bias_by_bin = np.full(len(edges) - 1, global_bias, dtype=float)
+        for b in range(len(bias_by_bin)):
+            m = bin_idx == b
+            if int(m.sum()) < int(min_bin_rows):
+                continue
+            bias_by_bin[b] = float(np.mean(y_true[m] - y_pred[m]))
+        calibrator = {"type": "segmented_bias", "edges": edges, "bias_by_bin": bias_by_bin}
+        y_cal = y_pred + bias_by_bin[bin_idx]
         return calibrator, y_cal
     calibrator = LinearRegression()
     calibrator.fit(y_pred.reshape(-1, 1), y_true)
@@ -795,9 +820,18 @@ def fit_posthoc_calibrator(
     return calibrator, y_cal
 
 
-def apply_posthoc_calibrator(calibrator: object, x: np.ndarray, method: str) -> np.ndarray:
+def apply_posthoc_calibrator(
+    calibrator: object, x: np.ndarray, method: str, base: np.ndarray | None = None
+) -> np.ndarray:
     if method == "isotonic":
         return calibrator.predict(x)
+    if method == "segmented_bias":
+        if base is None:
+            raise ValueError("base is required for segmented_bias calibration.")
+        edges = np.asarray(calibrator["edges"], dtype=float)
+        bias_by_bin = np.asarray(calibrator["bias_by_bin"], dtype=float)
+        bin_idx = np.digitize(base, edges[1:-1], right=False)
+        return x + bias_by_bin[bin_idx]
     return calibrator.predict(x.reshape(-1, 1))
 
 
@@ -1123,7 +1157,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--calibration-method",
-        choices=["isotonic", "linear"],
+        choices=["isotonic", "linear", "segmented_bias"],
         default=DEFAULT_CALIBRATION_METHOD,
         help=f"Post-hoc calibration method (default: {DEFAULT_CALIBRATION_METHOD}).",
     )
@@ -1134,6 +1168,21 @@ def main() -> int:
         help=(
             "Minimum relative RMSE gain on validation required to apply calibration "
             f"(default: {DEFAULT_CALIBRATION_MIN_REL_GAIN})."
+        ),
+    )
+    parser.add_argument(
+        "--calibration-bins",
+        type=int,
+        default=DEFAULT_CALIBRATION_BINS,
+        help=f"Number of baseline bins for segmented bias calibration (default: {DEFAULT_CALIBRATION_BINS}).",
+    )
+    parser.add_argument(
+        "--calibration-min-bin-rows",
+        type=int,
+        default=DEFAULT_CALIBRATION_MIN_BIN_ROWS,
+        help=(
+            "Minimum validation rows per baseline bin to fit bin-level bias "
+            f"(default: {DEFAULT_CALIBRATION_MIN_BIN_ROWS})."
         ),
     )
     parser.add_argument(
@@ -1293,6 +1342,12 @@ def main() -> int:
         return 1
     if args.calibration_min_rel_gain < 0:
         print("[ERROR] --calibration-min-rel-gain must be >= 0.")
+        return 1
+    if args.calibration_bins < 2:
+        print("[ERROR] --calibration-bins must be >= 2.")
+        return 1
+    if args.calibration_min_bin_rows <= 0:
+        print("[ERROR] --calibration-min-bin-rows must be positive.")
         return 1
     if not (0.0 <= args.min_feature_non_null_ratio < 1.0):
         print("[ERROR] --min-feature-non-null-ratio must be in [0, 1).")
@@ -1461,21 +1516,21 @@ def main() -> int:
 
     target_all = train_df[target_col].map(extract_numeric)
     baseline_train_all = train_df[baseline_col].map(extract_numeric)
-    target_nonzero_mask = target_all.abs() > BASELINE_EPS
-    baseline_nonzero_mask = baseline_train_all.abs() > BASELINE_EPS
+    target_positive_mask = target_all > BASELINE_EPS
+    baseline_positive_mask = baseline_train_all > BASELINE_EPS
     ratio_all = target_all / baseline_train_all
     ratio_finite_mask = ratio_all.notna() & np.isfinite(ratio_all) & (ratio_all.abs() <= FLOAT32_SAFE_MAX)
     valid_train_mask = (
         target_all.notna()
         & baseline_train_all.notna()
-        & target_nonzero_mask
-        & baseline_nonzero_mask
+        & target_positive_mask
+        & baseline_positive_mask
         & ratio_finite_mask
     )
     dropped_target_rows = int(target_all.isna().sum())
     dropped_baseline_rows = int(baseline_train_all.isna().sum())
-    dropped_zero_target_rows = int((target_all.notna() & (~target_nonzero_mask)).sum())
-    dropped_zero_baseline_rows = int((baseline_train_all.notna() & (~baseline_nonzero_mask)).sum())
+    dropped_non_positive_target_rows = int((target_all.notna() & (~target_positive_mask)).sum())
+    dropped_non_positive_baseline_rows = int((baseline_train_all.notna() & (~baseline_positive_mask)).sum())
     dropped_invalid_ratio_rows = int((~ratio_finite_mask).sum())
     dropped_train_rows = int((~valid_train_mask).sum())
 
@@ -1840,7 +1895,10 @@ def main() -> int:
         calibrator, val_pred_cal = fit_posthoc_calibrator(
             y_true=y_tar_val,
             y_pred=val_pred_selected,
+            base=base_val,
             method=args.calibration_method,
+            bins=args.calibration_bins,
+            min_bin_rows=args.calibration_min_bin_rows,
         )
         pre_metrics = evaluate_predictions(y_tar_val, val_pred_selected)
         cal_metrics = evaluate_predictions(y_tar_val, val_pred_cal)
@@ -1931,6 +1989,7 @@ def main() -> int:
                 calibrator=calibrator,
                 x=test_pred[valid_pred],
                 method=args.calibration_method,
+                base=baseline_test[valid_pred],
             )
 
     missing_test_baseline_rows = int(np.isnan(baseline_test).sum())
@@ -1992,6 +2051,11 @@ def main() -> int:
     if np.isfinite(calibration_rel_gain):
         print(f"Post-hoc calibration validation RMSE rel gain: {calibration_rel_gain:.6f}")
     print(f"Post-hoc calibration method: {args.calibration_method}")
+    if args.calibration_method == "segmented_bias":
+        print(
+            "Segmented bias calibration bins/min_rows: "
+            f"{args.calibration_bins}/{args.calibration_min_bin_rows}"
+        )
     print(f"Gate quantile selected: {selected_gate_quantile}")
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
@@ -2001,8 +2065,8 @@ def main() -> int:
     print(f"Valid train rows used: {len(y_train_ratio)}")
     print(f"Dropped rows (invalid target): {dropped_target_rows}")
     print(f"Dropped rows (invalid baseline): {dropped_baseline_rows}")
-    print(f"Dropped rows (target approximately zero): {dropped_zero_target_rows}")
-    print(f"Dropped rows (baseline approximately zero): {dropped_zero_baseline_rows}")
+    print(f"Dropped rows (target <= 0): {dropped_non_positive_target_rows}")
+    print(f"Dropped rows (baseline <= 0): {dropped_non_positive_baseline_rows}")
     print(f"Dropped rows (invalid target/baseline ratio): {dropped_invalid_ratio_rows}")
     print(f"Dropped rows (invalid target/baseline union): {dropped_train_rows}")
     print(f"Feature count: {len(feature_cols)}")
