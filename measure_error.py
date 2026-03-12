@@ -189,25 +189,34 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
-def prepare_data(df: pd.DataFrame, target_col: str, pred_col: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+def prepare_joint_data(
+    df: pd.DataFrame,
+    target_col: str,
+    generated_col: str,
+    baseline_col: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     if target_col not in df.columns:
         raise KeyError(f"Column '{target_col}' not found. Available columns: {list(df.columns)}")
-    if pred_col not in df.columns:
-        raise KeyError(f"Column '{pred_col}' not found. Available columns: {list(df.columns)}")
+    if generated_col not in df.columns:
+        raise KeyError(f"Column '{generated_col}' not found. Available columns: {list(df.columns)}")
+    if baseline_col not in df.columns:
+        raise KeyError(f"Column '{baseline_col}' not found. Available columns: {list(df.columns)}")
 
     raw_count = len(df)
 
     cleaned = pd.DataFrame(
         {
             "target": df[target_col].map(extract_numeric),
-            "pred": df[pred_col].map(extract_numeric),
+            "generated": df[generated_col].map(extract_numeric),
+            "baseline": df[baseline_col].map(extract_numeric),
         }
     )
 
     invalid_target = int(cleaned["target"].isna().sum())
-    invalid_pred = int(cleaned["pred"].isna().sum())
+    invalid_generated = int(cleaned["generated"].isna().sum())
+    invalid_baseline = int(cleaned["baseline"].isna().sum())
 
-    cleaned = cleaned.dropna(subset=["target", "pred"])
+    cleaned = cleaned.dropna(subset=["target", "generated", "baseline"])
     used_count = len(cleaned)
     dropped_count = raw_count - used_count
 
@@ -219,10 +228,16 @@ def prepare_data(df: pd.DataFrame, target_col: str, pred_col: str) -> Tuple[np.n
         "used_rows": used_count,
         "dropped_rows": dropped_count,
         "invalid_target_rows": invalid_target,
-        "invalid_pred_rows": invalid_pred,
+        "invalid_generated_rows": invalid_generated,
+        "invalid_baseline_rows": invalid_baseline,
     }
 
-    return cleaned["target"].to_numpy(dtype=float), cleaned["pred"].to_numpy(dtype=float), info
+    return (
+        cleaned["target"].to_numpy(dtype=float),
+        cleaned["generated"].to_numpy(dtype=float),
+        cleaned["baseline"].to_numpy(dtype=float),
+        info,
+    )
 
 
 def fmt(v: float) -> str:
@@ -271,24 +286,25 @@ def main() -> int:
 
     try:
         df = load_table(file_path)
-        y_true_gen, y_pred_gen, info_gen = prepare_data(df, args.target_col, args.generated_col)
-        y_true_base, y_pred_base, info_base = prepare_data(df, args.target_col, args.baseline_col)
-        metrics_gen = compute_metrics(y_true_gen, y_pred_gen)
-        metrics_base = compute_metrics(y_true_base, y_pred_base)
+        y_true, y_pred_gen, y_pred_base, info = prepare_joint_data(
+            df, args.target_col, args.generated_col, args.baseline_col
+        )
+        metrics_gen = compute_metrics(y_true, y_pred_gen)
+        metrics_base = compute_metrics(y_true, y_pred_base)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return 1
 
     print("=== Data Cleaning Summary ===")
     print(f"File: {file_path}")
-    print(f"Total rows: {info_gen['raw_rows']}")
+    print(f"Total rows: {info['raw_rows']}")
+    print(f"Used rows (shared by generated & baseline): {info['used_rows']}")
+    print(f"Dropped rows: {info['dropped_rows']}")
     print(
-        f"Generated used/dropped rows: {info_gen['used_rows']}/{info_gen['dropped_rows']} "
-        f"(invalid target/pred: {info_gen['invalid_target_rows']}/{info_gen['invalid_pred_rows']})"
-    )
-    print(
-        f"Baseline used/dropped rows : {info_base['used_rows']}/{info_base['dropped_rows']} "
-        f"(invalid target/pred: {info_base['invalid_target_rows']}/{info_base['invalid_pred_rows']})"
+        "Rows with invalid values (target/generated/baseline): "
+        f"{info['invalid_target_rows']}/"
+        f"{info['invalid_generated_rows']}/"
+        f"{info['invalid_baseline_rows']}"
     )
     print()
 
