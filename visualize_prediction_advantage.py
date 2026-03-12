@@ -206,7 +206,7 @@ def main() -> int:
     fig.savefig(overview_path, dpi=170)
     plt.close(fig)
 
-    # ---- Figure 2: PCA projection ----
+    # ---- Figure 2: target-line fit view (y=x ideal) ----
     n = len(cleaned)
     max_points = min(int(args.pca_max_points), n)
     if max_points < n:
@@ -214,21 +214,36 @@ def main() -> int:
         idx = np.sort(rng.choice(n, size=max_points, replace=False))
     else:
         idx = np.arange(n)
-    x_gen = np.column_stack([y[idx], p_gen[idx], np.abs(err_gen[idx]), err_gen[idx]])
-    x_base = np.column_stack([y[idx], p_base[idx], np.abs(err_base[idx]), err_base[idx]])
-    x_all = np.vstack([x_gen, x_base])
-    z_all = pca_2d(x_all)
-    z_gen = z_all[: len(idx)]
-    z_base = z_all[len(idx) :]
+    y_s = y[idx]
+    g_s = p_gen[idx]
+    b_s = p_base[idx]
+
+    # Clip axes to robust range for readability.
+    lo = float(np.nanquantile(np.concatenate([y_s, g_s, b_s]), 0.01))
+    hi = float(np.nanquantile(np.concatenate([y_s, g_s, b_s]), 0.99))
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        lo = float(np.nanmin(np.concatenate([y_s, g_s, b_s])))
+        hi = float(np.nanmax(np.concatenate([y_s, g_s, b_s])))
 
     fig2, ax2 = plt.subplots(1, 1, figsize=(8, 6))
-    ax2.scatter(z_base[:, 0], z_base[:, 1], s=8, alpha=0.20, label="baseline points")
-    ax2.scatter(z_gen[:, 0], z_gen[:, 1], s=8, alpha=0.20, label="generated points")
-    ax2.set_title("PCA Projection of [target, pred, |err|, err]")
-    ax2.set_xlabel("PC1")
-    ax2.set_ylabel("PC2")
+    ax2.scatter(y_s, b_s, s=8, alpha=0.20, label="baseline vs target")
+    ax2.scatter(y_s, g_s, s=8, alpha=0.20, label="generated vs target")
+    ax2.plot([lo, hi], [lo, hi], color="black", linestyle="--", linewidth=1.3, label="ideal: y=x")
+
+    # Add robust bin-means to show trend vs ideal line.
+    y_bins = pd.qcut(pd.Series(y_s), q=20, duplicates="drop")
+    mean_df = pd.DataFrame({"y": y_s, "g": g_s, "b": b_s, "yb": y_bins})
+    bmean = mean_df.groupby("yb", observed=False).agg(y=("y", "mean"), g=("g", "mean"), b=("b", "mean"))
+    ax2.plot(bmean["y"].to_numpy(), bmean["b"].to_numpy(), linewidth=2.0, label="baseline bin-mean")
+    ax2.plot(bmean["y"].to_numpy(), bmean["g"].to_numpy(), linewidth=2.0, label="generated bin-mean")
+
+    ax2.set_xlim(lo, hi)
+    ax2.set_ylim(lo, hi)
+    ax2.set_title("Target-Line Fit View (closer to y=x is better)")
+    ax2.set_xlabel("target")
+    ax2.set_ylabel("prediction")
     ax2.legend()
-    pca_path = out_dir / "pca_projection.png"
+    pca_path = out_dir / "target_line_fit.png"
     fig2.tight_layout()
     fig2.savefig(pca_path, dpi=170)
     plt.close(fig2)
@@ -273,7 +288,7 @@ def main() -> int:
     agg.to_csv(out_dir / "improvement_heatmap_stats.csv", index=False)
 
     print(f"Saved overview figure: {overview_path}")
-    print(f"Saved PCA figure: {pca_path}")
+    print(f"Saved target-line fit figure: {pca_path}")
     print(f"Saved heatmap figure: {heatmap_path}")
     print(f"Saved metrics CSV: {args.out_csv}")
     print(f"Saved binned stats CSV: {out_dir / 'improvement_heatmap_stats.csv'}")
