@@ -68,7 +68,7 @@ DEFAULT_MODEL_TYPE = "tabpfn"
 DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
-DEFAULT_TABPFN_N_ESTIMATORS = 64
+DEFAULT_TABPFN_N_ESTIMATORS = 8
 DEFAULT_TABPFN_FIT_MODE = "fit_with_cache"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
 DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
@@ -78,16 +78,16 @@ DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
-DEFAULT_ALPHA_GRID = "0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
-DEFAULT_GATE_QUANTILE = 0.3
+DEFAULT_ALPHA_GRID = "0,0.2,0.4,0.6,0.8,1.0"
+DEFAULT_GATE_QUANTILE = 0.5
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0,0.1,0.2,0.3,0.5"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0,0.1,0.2,0.5"
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
-DEFAULT_DISABLE_OOF_TUNING = False
+DEFAULT_DISABLE_OOF_TUNING = True
 DEFAULT_ENABLE_AUTO_FEATURE_PRUNING = True
 DEFAULT_AUTO_PRUNE_MAX_FEATURES = 500
 
@@ -645,7 +645,28 @@ def fit_gbdt_with_progress(
                 fallback_kwargs["model_path"] = model_path
             model = TabPFNRegressor(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
-        model.fit(x_train_t, y_train)
+        try:
+            model.fit(x_train_t, y_train)
+        except OSError as exc:
+            msg = str(exc).lower()
+            is_mem_oom = ("cannot allocate memory" in msg) or ("errno 12" in msg)
+            can_retry = int(tabpfn_preprocessing_jobs) != 1
+            if (not is_mem_oom) or (not can_retry):
+                raise
+            print(
+                f"\n[WARN] TabPFN regressor OOM during fit ({exc}). "
+                "Retrying with n_preprocessing_jobs=1."
+            )
+            retry_kwargs = dict(model_kwargs)
+            retry_kwargs["n_preprocessing_jobs"] = 1
+            try:
+                model = TabPFNRegressor(**retry_kwargs)
+            except TypeError:
+                retry_fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
+                if model_path:
+                    retry_fallback_kwargs["model_path"] = model_path
+                model = TabPFNRegressor(**retry_fallback_kwargs)
+            model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
         return preprocessor, model
 
@@ -708,7 +729,28 @@ def fit_gbdt_classifier_with_progress(
                 fallback_kwargs["model_path"] = model_path
             model = TabPFNClassifier(**fallback_kwargs)
         print_progress_bar(0, 1, prefix=prefix)
-        model.fit(x_train_t, y_train)
+        try:
+            model.fit(x_train_t, y_train)
+        except OSError as exc:
+            msg = str(exc).lower()
+            is_mem_oom = ("cannot allocate memory" in msg) or ("errno 12" in msg)
+            can_retry = int(tabpfn_preprocessing_jobs) != 1
+            if (not is_mem_oom) or (not can_retry):
+                raise
+            print(
+                f"\n[WARN] TabPFN classifier OOM during fit ({exc}). "
+                "Retrying with n_preprocessing_jobs=1."
+            )
+            retry_kwargs = dict(model_kwargs)
+            retry_kwargs["n_preprocessing_jobs"] = 1
+            try:
+                model = TabPFNClassifier(**retry_kwargs)
+            except TypeError:
+                retry_fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
+                if model_path:
+                    retry_fallback_kwargs["model_path"] = model_path
+                model = TabPFNClassifier(**retry_fallback_kwargs)
+            model.fit(x_train_t, y_train)
         print_progress_bar(1, 1, prefix=prefix)
         return preprocessor, model
 
