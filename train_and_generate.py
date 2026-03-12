@@ -90,6 +90,8 @@ DEFAULT_GATE_MAX_CORRECTION_RATE = 0.55
 DEFAULT_GATE_RATE_PENALTY_WEIGHT = 12.0
 DEFAULT_TUNE_OBJECTIVE = "mae"
 DEFAULT_ENABLE_SEGMENTED_ALPHA = False
+DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING = True
+DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX = 8.0
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
 DEFAULT_DISABLE_OOF_TUNING = False
@@ -823,11 +825,28 @@ def trimmed_mean(arr: np.ndarray, trim_ratio: float) -> float:
     return float(np.mean(arr_sorted[lo:hi]))
 
 
-def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+def evaluate_predictions(
+    y_true: np.ndarray, y_pred: np.ndarray, sample_weight: np.ndarray | None = None
+) -> Dict[str, float]:
     err = y_pred - y_true
-    mae = float(mean_absolute_error(y_true, y_pred))
-    rmse = float(math.sqrt(mean_squared_error(y_true, y_pred)))
-    r2 = float(r2_score(y_true, y_pred)) if len(y_true) >= 2 else np.nan
+    if sample_weight is not None:
+        w = np.asarray(sample_weight, dtype=float)
+        w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+        if np.sum(w) <= 0:
+            w = np.ones_like(err, dtype=float)
+        mae = float(np.average(np.abs(err), weights=w))
+        rmse = float(np.sqrt(np.average(err**2, weights=w)))
+        if len(y_true) >= 2:
+            y_bar = float(np.average(y_true, weights=w))
+            ss_res = float(np.sum(w * ((y_true - y_pred) ** 2)))
+            ss_tot = float(np.sum(w * ((y_true - y_bar) ** 2)))
+            r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+        else:
+            r2 = np.nan
+    else:
+        mae = float(mean_absolute_error(y_true, y_pred))
+        rmse = float(math.sqrt(mean_squared_error(y_true, y_pred)))
+        r2 = float(r2_score(y_true, y_pred)) if len(y_true) >= 2 else np.nan
     trimmed_rmse90 = float(np.sqrt(trimmed_mean(err**2, 0.05)))
     return {"mae": mae, "rmse": rmse, "r2": r2, "trimmed_rmse90": trimmed_rmse90}
 
@@ -855,6 +874,51 @@ def penalize_by_gate_rate(
     high_violation = max(gate_prob_mean - max_rate, 0.0)
     violation = low_violation + high_violation
     return float(raw_score * (1.0 + weight * violation))
+
+
+def build_test_distribution_weights(
+    x_train: pd.DataFrame,
+    x_test: pd.DataFrame,
+    numeric_cols: List[str],
+    categorical_cols: List[str],
+    max_weight: float,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """
+    Estimate train-sample importance weights toward test feature distribution.
+    Uses a domain classifier p(test|x), then ratio = p/(1-p), clipped and normalized.
+    """
+    domain_x = pd.concat([x_train, x_test], axis=0, ignore_index=True)
+    domain_y = np.concatenate(
+        [
+            np.zeros(x_train.shape[0], dtype=int),
+            np.ones(x_test.shape[0], dtype=int),
+        ]
+    )
+    pre = build_preprocessor(numeric_cols, categorical_cols)
+    x_all_t = pre.fit_transform(domain_x)
+    clf = HistGradientBoostingClassifier(
+        learning_rate=0.05,
+        max_iter=120,
+        max_leaf_nodes=31,
+        min_samples_leaf=20,
+        l2_regularization=1e-3,
+        random_state=42,
+    )
+    clf.fit(x_all_t, domain_y)
+    x_train_t = x_all_t[: x_train.shape[0]]
+    p_test = clf.predict_proba(x_train_t)[:, 1]
+    p_test = np.clip(p_test, 1e-4, 1.0 - 1e-4)
+    w = p_test / (1.0 - p_test)
+    w = np.clip(w, 1.0 / max(max_weight, 1.0), max(max_weight, 1.0))
+    w = w / max(float(np.mean(w)), 1e-12)
+    stats = {
+        "mean": float(np.mean(w)),
+        "p50": float(np.quantile(w, 0.5)),
+        "p90": float(np.quantile(w, 0.9)),
+        "p99": float(np.quantile(w, 0.99)),
+        "max": float(np.max(w)),
+    }
+    return w.astype(float), stats
 
 
 def fit_posthoc_calibrator(
@@ -1055,6 +1119,7 @@ def pick_best_alpha(
     ratio_lower: float,
     ratio_upper: float,
     objective: str,
+    sample_weight: np.ndarray | None = None,
 ) -> Tuple[float, Dict[str, float]]:
     base_slog = signed_log1p(base)
     best_alpha = alpha_candidates[0]
@@ -1066,7 +1131,7 @@ def pick_best_alpha(
         y_ratio_pred = y_pred / base
         y_ratio_pred = np.clip(y_ratio_pred, ratio_lower, ratio_upper)
         y_pred = base * y_ratio_pred
-        metrics = evaluate_predictions(y_true, y_pred)
+        metrics = evaluate_predictions(y_true, y_pred, sample_weight=sample_weight)
         score = objective_value(metrics, objective)
         if score < best_score:
             best_score = score
@@ -1086,6 +1151,7 @@ def fit_segmented_alpha(
     n_bins: int,
     min_bin_rows: int,
     objective: str,
+    sample_weight: np.ndarray | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     edges = make_adaptive_bins(base, n_bins)
     bin_idx = assign_bins(base, edges)
@@ -1098,6 +1164,7 @@ def fit_segmented_alpha(
         ratio_lower=ratio_lower,
         ratio_upper=ratio_upper,
         objective=objective,
+        sample_weight=sample_weight,
     )
 
     alpha_by_bin = np.full(len(edges) - 1, default_alpha, dtype=float)
@@ -1114,6 +1181,7 @@ def fit_segmented_alpha(
             ratio_lower=ratio_lower,
             ratio_upper=ratio_upper,
             objective=objective,
+            sample_weight=sample_weight[mask] if sample_weight is not None else None,
         )
         alpha_by_bin[b] = best_a
 
@@ -1122,7 +1190,7 @@ def fit_segmented_alpha(
     pred_ratio = pred / base
     pred_ratio = np.clip(pred_ratio, ratio_lower, ratio_upper)
     pred = base * pred_ratio
-    metrics = evaluate_predictions(y_true, pred)
+    metrics = evaluate_predictions(y_true, pred, sample_weight=sample_weight)
     return edges, alpha_by_bin, metrics
 
 
@@ -1451,6 +1519,24 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--enable-test-distribution-weighting",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING,
+        help=(
+            "Use test-feature-distribution importance weights in validation objective "
+            f"(default: {DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING})."
+        ),
+    )
+    parser.add_argument(
+        "--test-distribution-weight-max",
+        type=float,
+        default=DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX,
+        help=(
+            "Max clip for distribution-importance weights "
+            f"(default: {DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX})."
+        ),
+    )
+    parser.add_argument(
         "--tune-objective",
         default=DEFAULT_TUNE_OBJECTIVE,
         choices=["mae", "rmse", "trimmed_rmse90", "hybrid"],
@@ -1542,6 +1628,9 @@ def main() -> int:
         return 1
     if args.gate_rate_penalty_weight < 0:
         print("[ERROR] --gate-rate-penalty-weight must be >= 0.")
+        return 1
+    if args.test_distribution_weight_max < 1.0:
+        print("[ERROR] --test-distribution-weight-max must be >= 1.")
         return 1
     if args.baseline_alpha_bins < 2:
         print("[ERROR] --baseline-alpha-bins must be >= 2.")
@@ -1802,6 +1891,21 @@ def main() -> int:
         return 1
     feature_cols = list(X_train.columns)
     numeric_cols, categorical_cols = infer_feature_types(X_train, args.numeric_like_threshold)
+    validation_sample_weights = np.ones(len(y_train_target), dtype=float)
+    dist_weight_stats: Dict[str, float] = {}
+    if args.enable_test_distribution_weighting:
+        try:
+            validation_sample_weights, dist_weight_stats = build_test_distribution_weights(
+                x_train=X_train,
+                x_test=X_test,
+                numeric_cols=numeric_cols,
+                categorical_cols=categorical_cols,
+                max_weight=float(args.test_distribution_weight_max),
+            )
+        except Exception as exc:
+            print(f"[WARN] Failed to build test-distribution weights, fallback to uniform: {exc}")
+            validation_sample_weights = np.ones(len(y_train_target), dtype=float)
+            dist_weight_stats = {}
 
     n_train = len(y_train_target)
     ratio_lower_val = ratio_lower
@@ -1821,6 +1925,7 @@ def main() -> int:
         base_val = baseline_train[va_idx]
         y_corr_tr = y_corr_full_true[tr_idx]
         y_corr_val_true = y_corr_full_true[va_idx]
+        w_val = validation_sample_weights[va_idx]
 
         ratio_tr = y_train_ratio[tr_idx]
         ratio_lower_val = float(np.quantile(ratio_tr, lower_q))
@@ -1850,7 +1955,7 @@ def main() -> int:
         baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
         baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
         baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
-        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
+        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val, sample_weight=w_val)
 
         if args.disable_auto_gate_quantile:
             q_candidates = [args.gate_quantile]
@@ -1902,6 +2007,7 @@ def main() -> int:
                 ratio_lower=ratio_lower_val,
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
+                sample_weight=w_val,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -1915,6 +2021,7 @@ def main() -> int:
                     n_bins=args.baseline_alpha_bins,
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
+                    sample_weight=w_val,
                 )
                 use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
                     metrics_global, args.tune_objective
@@ -1996,7 +2103,8 @@ def main() -> int:
         baseline_val_mae = mean_absolute_error(y_tar_val, base_val)
         baseline_val_rmse = math.sqrt(mean_squared_error(y_tar_val, base_val))
         baseline_val_r2 = r2_score(y_tar_val, base_val) if len(y_tar_val) >= 2 else np.nan
-        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val)
+        w_val = validation_sample_weights
+        baseline_val_metrics = evaluate_predictions(y_tar_val, base_val, sample_weight=w_val)
 
         if args.disable_auto_gate_quantile:
             q_candidates = [args.gate_quantile]
@@ -2067,6 +2175,7 @@ def main() -> int:
                 ratio_lower=ratio_lower_val,
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
+                sample_weight=w_val,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -2080,6 +2189,7 @@ def main() -> int:
                     n_bins=args.baseline_alpha_bins,
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
+                    sample_weight=w_val,
                 )
                 use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
                     metrics_global, args.tune_objective
@@ -2318,6 +2428,19 @@ def main() -> int:
     print(f"Best alpha (validation): {best_alpha}")
     print(f"Segmented alpha used: {'yes' if use_segment_alpha else 'no'}")
     print(f"Segmented alpha enabled: {'yes' if args.enable_segmented_alpha else 'no'}")
+    print(
+        "Test-distribution weighting enabled: "
+        f"{'yes' if args.enable_test_distribution_weighting else 'no'}"
+    )
+    if dist_weight_stats:
+        print(
+            "Test-distribution weight stats (mean/p50/p90/p99/max): "
+            f"{fmt(dist_weight_stats['mean'])}/"
+            f"{fmt(dist_weight_stats['p50'])}/"
+            f"{fmt(dist_weight_stats['p90'])}/"
+            f"{fmt(dist_weight_stats['p99'])}/"
+            f"{fmt(dist_weight_stats['max'])}"
+        )
     print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
     print(f"Tuning objective: {args.tune_objective}")
     print(f"Validation mode: {validation_mode_label}")
