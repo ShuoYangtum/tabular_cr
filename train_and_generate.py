@@ -58,7 +58,7 @@ DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
-DEFAULT_RATIO_COVERAGE = 0.98
+DEFAULT_RATIO_COVERAGE = 0.95
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
@@ -79,11 +79,14 @@ DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
 DEFAULT_ALPHA_GRID = "0,0.8,1.0,1.2,2.0"
-DEFAULT_GATE_QUANTILE = 0.5
+DEFAULT_GATE_QUANTILE = 0.4
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 10
 DEFAULT_MIN_BIN_ROWS = 80
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0,0.1,0.2,0.5"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.2,0.3,0.4,0.5,0.6"
+DEFAULT_GATE_MIN_CORRECTION_RATE = 0.10
+DEFAULT_GATE_MAX_CORRECTION_RATE = 0.80
+DEFAULT_GATE_RATE_PENALTY_WEIGHT = 6.0
 DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
@@ -832,6 +835,20 @@ def objective_value(metrics: Dict[str, float], objective: str) -> float:
     return float(0.8 * metrics["mae"] + 0.2 * metrics["trimmed_rmse90"])
 
 
+def penalize_by_gate_rate(
+    raw_score: float,
+    gate_prob_mean: float,
+    min_rate: float,
+    max_rate: float,
+    weight: float,
+) -> float:
+    """Soft penalty to avoid too-aggressive or too-weak correction on validation."""
+    low_violation = max(min_rate - gate_prob_mean, 0.0)
+    high_violation = max(gate_prob_mean - max_rate, 0.0)
+    violation = low_violation + high_violation
+    return float(raw_score * (1.0 + weight * violation))
+
+
 def fit_posthoc_calibrator(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -1354,6 +1371,33 @@ def main() -> int:
         help="Disable automatic gate-quantile search and use --gate-quantile only.",
     )
     parser.add_argument(
+        "--gate-min-correction-rate",
+        type=float,
+        default=DEFAULT_GATE_MIN_CORRECTION_RATE,
+        help=(
+            "Soft lower bound for mean gate probability during q search. "
+            f"(default: {DEFAULT_GATE_MIN_CORRECTION_RATE})"
+        ),
+    )
+    parser.add_argument(
+        "--gate-max-correction-rate",
+        type=float,
+        default=DEFAULT_GATE_MAX_CORRECTION_RATE,
+        help=(
+            "Soft upper bound for mean gate probability during q search. "
+            f"(default: {DEFAULT_GATE_MAX_CORRECTION_RATE})"
+        ),
+    )
+    parser.add_argument(
+        "--gate-rate-penalty-weight",
+        type=float,
+        default=DEFAULT_GATE_RATE_PENALTY_WEIGHT,
+        help=(
+            "Penalty strength when gate correction rate is outside preferred range "
+            f"(default: {DEFAULT_GATE_RATE_PENALTY_WEIGHT})."
+        ),
+    )
+    parser.add_argument(
         "--baseline-alpha-bins",
         type=int,
         default=DEFAULT_BASELINE_ALPHA_BINS,
@@ -1445,6 +1489,18 @@ def main() -> int:
         return 1
     if not (0.0 <= args.gate_quantile < 1.0):
         print("[ERROR] --gate-quantile must be in [0, 1).")
+        return 1
+    if not (0.0 <= args.gate_min_correction_rate <= 1.0):
+        print("[ERROR] --gate-min-correction-rate must be in [0, 1].")
+        return 1
+    if not (0.0 <= args.gate_max_correction_rate <= 1.0):
+        print("[ERROR] --gate-max-correction-rate must be in [0, 1].")
+        return 1
+    if args.gate_min_correction_rate > args.gate_max_correction_rate:
+        print("[ERROR] --gate-min-correction-rate cannot exceed --gate-max-correction-rate.")
+        return 1
+    if args.gate_rate_penalty_weight < 0:
+        print("[ERROR] --gate-rate-penalty-weight must be >= 0.")
         return 1
     if args.baseline_alpha_bins < 2:
         print("[ERROR] --baseline-alpha-bins must be >= 2.")
@@ -1823,12 +1879,21 @@ def main() -> int:
             )
             selected_metrics = metrics_segment if use_segment else metrics_global
             selected_score = objective_value(selected_metrics, args.tune_objective)
-            if selected_score < best_val_rmse:
-                best_val_rmse = selected_score
+            gate_prob_mean = float(np.mean(gate_prob_val))
+            selected_score_penalized = penalize_by_gate_rate(
+                raw_score=selected_score,
+                gate_prob_mean=gate_prob_mean,
+                min_rate=float(args.gate_min_correction_rate),
+                max_rate=float(args.gate_max_correction_rate),
+                weight=float(args.gate_rate_penalty_weight),
+            )
+            if selected_score_penalized < best_val_rmse:
+                best_val_rmse = selected_score_penalized
                 best_val_package = {
                     "q": q,
                     "gate_thr": gate_thr_cand,
                     "gate_acc": gate_acc_cand,
+                    "gate_prob_mean": gate_prob_mean,
                     "gate_prob_val": gate_prob_val,
                     "alpha_global": alpha_global,
                     "alpha_edges": alpha_edges_cand,
@@ -1838,6 +1903,7 @@ def main() -> int:
                     "metrics_segment": metrics_segment,
                     "metrics_selected": selected_metrics,
                     "selected_score": selected_score,
+                    "selected_score_penalized": selected_score_penalized,
                 }
     else:
         validation_mode_label = f"OOF ({args.oof_folds}-fold)"
@@ -1966,12 +2032,21 @@ def main() -> int:
             )
             selected_metrics = metrics_segment if use_segment else metrics_global
             selected_score = objective_value(selected_metrics, args.tune_objective)
-            if selected_score < best_val_rmse:
-                best_val_rmse = selected_score
+            gate_prob_mean = float(np.mean(gate_prob_oof))
+            selected_score_penalized = penalize_by_gate_rate(
+                raw_score=selected_score,
+                gate_prob_mean=gate_prob_mean,
+                min_rate=float(args.gate_min_correction_rate),
+                max_rate=float(args.gate_max_correction_rate),
+                weight=float(args.gate_rate_penalty_weight),
+            )
+            if selected_score_penalized < best_val_rmse:
+                best_val_rmse = selected_score_penalized
                 best_val_package = {
                     "q": q,
                     "gate_thr": float(np.median(fold_gate_thresholds)),
                     "gate_acc": gate_acc_cand,
+                    "gate_prob_mean": gate_prob_mean,
                     "gate_prob_val": gate_prob_oof,
                     "alpha_global": alpha_global,
                     "alpha_edges": alpha_edges_cand,
@@ -1981,11 +2056,13 @@ def main() -> int:
                     "metrics_segment": metrics_segment,
                     "metrics_selected": selected_metrics,
                     "selected_score": selected_score,
+                    "selected_score_penalized": selected_score_penalized,
                 }
 
     selected_gate_quantile = float(best_val_package["q"])
     gate_thr = float(best_val_package["gate_thr"])
     gate_acc_val = float(best_val_package["gate_acc"])
+    gate_prob_mean_val = float(best_val_package.get("gate_prob_mean", np.nan))
     best_alpha = float(best_val_package["alpha_global"])
     best_alpha_edges = np.asarray(best_val_package["alpha_edges"], dtype=float)
     best_alpha_by_bin = np.asarray(best_val_package["alpha_by_bin"], dtype=float)
@@ -1998,6 +2075,7 @@ def main() -> int:
 
     baseline_objective = objective_value(baseline_val_metrics, args.tune_objective)
     selected_objective = float(best_val_package["selected_score"])
+    selected_objective_penalized = float(best_val_package.get("selected_score_penalized", selected_objective))
     rel_gain = (baseline_objective - selected_objective) / max(abs(baseline_objective), 1e-12)
     fallback_to_baseline = rel_gain < args.min_validation_rel_gain
     if fallback_to_baseline:
@@ -2195,6 +2273,15 @@ def main() -> int:
             f"{args.calibration_bins}/{args.calibration_min_bin_rows}"
         )
     print(f"Gate quantile selected: {selected_gate_quantile}")
+    print(
+        "Gate mean correction prob (validation): "
+        f"{fmt(gate_prob_mean_val)} "
+        f"(preferred range: {args.gate_min_correction_rate:.2f}-{args.gate_max_correction_rate:.2f})"
+    )
+    print(
+        "Validation objective (raw/penalized): "
+        f"{fmt(selected_objective)}/{fmt(selected_objective_penalized)}"
+    )
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
     print(f"Ratio clip range (validation): [{fmt(ratio_lower_val)}, {fmt(ratio_upper_val)}]")
