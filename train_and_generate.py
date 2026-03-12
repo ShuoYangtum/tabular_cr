@@ -64,7 +64,7 @@ DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
-DEFAULT_MODEL_TYPE = "gbdt"
+DEFAULT_MODEL_TYPE = "tabpfn"
 DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
 DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
 DEFAULT_TABPFN_DEVICE = "auto"
@@ -72,6 +72,7 @@ DEFAULT_TABPFN_N_ESTIMATORS = 32
 DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
 DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
 DEFAULT_TABPFN_PREPROCESSING_JOBS = 4
+DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS = True
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
@@ -608,6 +609,7 @@ def fit_gbdt_with_progress(
     tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
     tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
     tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
+    tabpfn_ignore_pretraining_limits: bool = DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -628,6 +630,7 @@ def fit_gbdt_with_progress(
             "fit_mode": tabpfn_fit_mode,
             "inference_precision": tabpfn_inference_precision,
             "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
+            "ignore_pretraining_limits": bool(tabpfn_ignore_pretraining_limits),
         }
         if model_path:
             model_kwargs["model_path"] = model_path
@@ -670,6 +673,7 @@ def fit_gbdt_classifier_with_progress(
     tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
     tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
     tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
+    tabpfn_ignore_pretraining_limits: bool = DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
@@ -690,6 +694,7 @@ def fit_gbdt_classifier_with_progress(
             "fit_mode": tabpfn_fit_mode,
             "inference_precision": tabpfn_inference_precision,
             "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
+            "ignore_pretraining_limits": bool(tabpfn_ignore_pretraining_limits),
         }
         if model_path:
             model_kwargs["model_path"] = model_path
@@ -1147,6 +1152,15 @@ def main() -> int:
         help=(
             "TabPFN n_preprocessing_jobs for CPU-side preprocessing "
             f"(default: {DEFAULT_TABPFN_PREPROCESSING_JOBS})."
+        ),
+    )
+    parser.add_argument(
+        "--tabpfn-ignore-pretraining-limits",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
+        help=(
+            "Allow TabPFN to run outside official pretraining limits (e.g., >500 features). "
+            f"(default: {DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS})"
         ),
     )
     parser.add_argument(
@@ -1614,6 +1628,7 @@ def main() -> int:
             tabpfn_fit_mode=args.tabpfn_fit_mode,
             tabpfn_inference_precision=args.tabpfn_inference_precision,
             tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+            tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
         )
         x_val_corr_t = corr_pre_val.transform(x_val)
         corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1652,6 +1667,7 @@ def main() -> int:
                     tabpfn_fit_mode=args.tabpfn_fit_mode,
                     tabpfn_inference_precision=args.tabpfn_inference_precision,
                     tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+                    tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
                 )
                 x_val_gate_t = gate_pre_cand.transform(x_val)
                 gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -1732,6 +1748,7 @@ def main() -> int:
                 tabpfn_fit_mode=args.tabpfn_fit_mode,
                 tabpfn_inference_precision=args.tabpfn_inference_precision,
                 tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+                tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
             )
             x_va_corr_t = corr_pre_fold.transform(x_va_fold)
             corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
@@ -1790,6 +1807,7 @@ def main() -> int:
                         tabpfn_fit_mode=args.tabpfn_fit_mode,
                         tabpfn_inference_precision=args.tabpfn_inference_precision,
                         tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+                        tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
                     )
                     x_va_gate_t = gate_pre_fold.transform(x_va_fold)
                     gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
@@ -1928,6 +1946,7 @@ def main() -> int:
         tabpfn_fit_mode=args.tabpfn_fit_mode,
         tabpfn_inference_precision=args.tabpfn_inference_precision,
         tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+        tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -1951,6 +1970,7 @@ def main() -> int:
             tabpfn_fit_mode=args.tabpfn_fit_mode,
             tabpfn_inference_precision=args.tabpfn_inference_precision,
             tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
+            tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
         )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -2017,9 +2037,10 @@ def main() -> int:
         print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
         print(f"TabPFN device (requested/resolved): {args.tabpfn_device}/{resolved_tabpfn_device}")
         print(
-            "TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs): "
+            "TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs/ignore_limits): "
             f"{args.tabpfn_n_estimators}/{args.tabpfn_fit_mode}/"
-            f"{args.tabpfn_inference_precision}/{args.tabpfn_preprocessing_jobs}"
+            f"{args.tabpfn_inference_precision}/{args.tabpfn_preprocessing_jobs}/"
+            f"{args.tabpfn_ignore_pretraining_limits}"
         )
         print("TabPFN telemetry: disabled")
         print(
