@@ -79,16 +79,17 @@ DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
-DEFAULT_ALPHA_GRID = "0,0.8,1.0,1.2,2.0"
+DEFAULT_ALPHA_GRID = "0,0.4,0.6,0.8,1.0"
 DEFAULT_GATE_QUANTILE = 0.4
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 12
 DEFAULT_MIN_BIN_ROWS = 60
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.3,0.4,0.5,0.6,0.7"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.4,0.5,0.6,0.7"
 DEFAULT_GATE_MIN_CORRECTION_RATE = 0.10
-DEFAULT_GATE_MAX_CORRECTION_RATE = 0.65
+DEFAULT_GATE_MAX_CORRECTION_RATE = 0.55
 DEFAULT_GATE_RATE_PENALTY_WEIGHT = 12.0
-DEFAULT_TUNE_OBJECTIVE = "hybrid"
+DEFAULT_TUNE_OBJECTIVE = "mae"
+DEFAULT_ENABLE_SEGMENTED_ALPHA = False
 DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
 DEFAULT_OOF_FOLDS = 3
 DEFAULT_DISABLE_OOF_TUNING = False
@@ -832,6 +833,8 @@ def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, fl
 
 
 def objective_value(metrics: Dict[str, float], objective: str) -> float:
+    if objective == "mae":
+        return float(metrics["mae"])
     if objective == "rmse":
         return float(metrics["rmse"])
     if objective == "trimmed_rmse90":
@@ -1439,9 +1442,18 @@ def main() -> int:
         help=f"Minimum validation rows to tune alpha per bin (default: {DEFAULT_MIN_BIN_ROWS}).",
     )
     parser.add_argument(
+        "--enable-segmented-alpha",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_SEGMENTED_ALPHA,
+        help=(
+            "Enable segmented alpha tuning by baseline bins. "
+            f"(default: {DEFAULT_ENABLE_SEGMENTED_ALPHA})."
+        ),
+    )
+    parser.add_argument(
         "--tune-objective",
         default=DEFAULT_TUNE_OBJECTIVE,
-        choices=["rmse", "trimmed_rmse90", "hybrid"],
+        choices=["mae", "rmse", "trimmed_rmse90", "hybrid"],
         help=f"Validation tuning objective (default: {DEFAULT_TUNE_OBJECTIVE}).",
     )
     parser.add_argument(
@@ -1891,21 +1903,27 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
             )
-            alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
-                y_true=y_tar_val,
-                base=base_val,
-                corr_pred=corr_pred_val,
-                gate_prob=gate_prob_val,
-                alpha_candidates=alpha_candidates,
-                ratio_lower=ratio_lower_val,
-                ratio_upper=ratio_upper_val,
-                n_bins=args.baseline_alpha_bins,
-                min_bin_rows=args.min_bin_rows,
-                objective=args.tune_objective,
-            )
-            use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
-                metrics_global, args.tune_objective
-            )
+            if args.enable_segmented_alpha:
+                alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
+                    y_true=y_tar_val,
+                    base=base_val,
+                    corr_pred=corr_pred_val,
+                    gate_prob=gate_prob_val,
+                    alpha_candidates=alpha_candidates,
+                    ratio_lower=ratio_lower_val,
+                    ratio_upper=ratio_upper_val,
+                    n_bins=args.baseline_alpha_bins,
+                    min_bin_rows=args.min_bin_rows,
+                    objective=args.tune_objective,
+                )
+                use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
+                    metrics_global, args.tune_objective
+                )
+            else:
+                alpha_edges_cand = np.array([-np.inf, np.inf], dtype=float)
+                alpha_by_bin_cand = np.array([alpha_global], dtype=float)
+                metrics_segment = metrics_global
+                use_segment = False
             selected_metrics = metrics_segment if use_segment else metrics_global
             selected_score = objective_value(selected_metrics, args.tune_objective)
             gate_prob_mean = float(np.mean(gate_prob_val))
@@ -2050,21 +2068,27 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
             )
-            alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
-                y_true=y_tar_val,
-                base=base_val,
-                corr_pred=corr_pred_val,
-                gate_prob=gate_prob_oof,
-                alpha_candidates=alpha_candidates,
-                ratio_lower=ratio_lower_val,
-                ratio_upper=ratio_upper_val,
-                n_bins=args.baseline_alpha_bins,
-                min_bin_rows=args.min_bin_rows,
-                objective=args.tune_objective,
-            )
-            use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
-                metrics_global, args.tune_objective
-            )
+            if args.enable_segmented_alpha:
+                alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
+                    y_true=y_tar_val,
+                    base=base_val,
+                    corr_pred=corr_pred_val,
+                    gate_prob=gate_prob_oof,
+                    alpha_candidates=alpha_candidates,
+                    ratio_lower=ratio_lower_val,
+                    ratio_upper=ratio_upper_val,
+                    n_bins=args.baseline_alpha_bins,
+                    min_bin_rows=args.min_bin_rows,
+                    objective=args.tune_objective,
+                )
+                use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
+                    metrics_global, args.tune_objective
+                )
+            else:
+                alpha_edges_cand = np.array([-np.inf, np.inf], dtype=float)
+                alpha_by_bin_cand = np.array([alpha_global], dtype=float)
+                metrics_segment = metrics_global
+                use_segment = False
             selected_metrics = metrics_segment if use_segment else metrics_global
             selected_score = objective_value(selected_metrics, args.tune_objective)
             gate_prob_mean = float(np.mean(gate_prob_oof))
@@ -2293,6 +2317,7 @@ def main() -> int:
     print(f"Alpha candidates: {alpha_candidates}")
     print(f"Best alpha (validation): {best_alpha}")
     print(f"Segmented alpha used: {'yes' if use_segment_alpha else 'no'}")
+    print(f"Segmented alpha enabled: {'yes' if args.enable_segmented_alpha else 'no'}")
     print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
     print(f"Tuning objective: {args.tune_objective}")
     print(f"Validation mode: {validation_mode_label}")
