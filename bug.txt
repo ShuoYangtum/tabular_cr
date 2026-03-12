@@ -1,4 +1,83 @@
-esg_firma_environmental__abfall__gesamt-wert
-esg_firma_environmental__co2-ausstoss-gesamt__wert
-esg_firma_esg-bewertung__bewertung__social__fluktuationsquote
-esg_firma_esg-bewertung__bewertung__social__unfallrate
+
+Correction regressor (OOF fold 1/3): [------------------------------] 0/1
+Correction regressor (OOF fold 1/3): [##############################] 1/1
+
+Correction regressor (OOF fold 2/3): [------------------------------] 0/1
+Correction regressor (OOF fold 2/3): [##############################] 1/1
+
+Correction regressor (OOF fold 3/3): [------------------------------] 0/1
+Correction regressor (OOF fold 3/3): [##############################] 1/1
+
+Correction gate classifier (OOF fold 1/3, q=0.10): [------------------------------] 0/1
+Correction gate classifier (OOF fold 1/3, q=0.10): [##############################] 1/1
+
+Correction gate classifier (OOF fold 2/3, q=0.10): [------------------------------] 0/1Traceback (most recent call last):
+  File "/home/yangsext/tabular/train_and_generate.py", line 2224, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 1871, in main
+    gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/tabular/train_and_generate.py", line 711, in fit_gbdt_classifier_with_progress
+    model.fit(x_train_t, y_train)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 320, in wrapper
+    return _safe_call_with_telemetry(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn_common_utils/telemetry/core/decorators.py", line 364, in _safe_call_with_telemetry
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/classifier.py", line 751, in fit
+    self.executor_ = create_inference_engine(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/base.py", line 338, in create_inference_engine
+    return InferenceEngineCacheKV(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/inference.py", line 766, in __init__
+    for ensemble_member in ensemble_members_iterator:
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/ensemble.py", line 140, in fit_transform_ensemble_members_iterator
+    for i, (
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/tabpfn/preprocessing/transform.py", line 169, in fit_preprocessing
+    yield from executor(  # type: ignore[misc]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 2005, in __call__
+    next(output)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1643, in _get_outputs
+    self._start(iterator, pre_dispatch)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1626, in _start
+    if self.dispatch_one_batch(iterator):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1517, in dispatch_one_batch
+    self._dispatch(tasks)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/parallel.py", line 1418, in _dispatch
+    job = self._backend.apply_async(batch, callback=batch_tracker)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/_parallel_backends.py", line 588, in apply_async
+    future = self._workers.submit(func)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/reusable_executor.py", line 225, in submit
+    return super().submit(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/process_executor.py", line 1248, in submit
+    self._ensure_executor_running()
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/process_executor.py", line 1220, in _ensure_executor_running
+    self._adjust_process_count()
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/process_executor.py", line 1209, in _adjust_process_count
+    p.start()
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+                  ^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/backend/process.py", line 45, in _Popen
+    return Popen(process_obj)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/backend/popen_loky_posix.py", line 48, in __init__
+    self._launch(process_obj)
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/backend/popen_loky_posix.py", line 128, in _launch
+    pid = fork_exec(cmd_python, self._fds, env=process_obj.env)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/joblib/externals/loky/backend/fork_exec.py", line 38, in fork_exec
+    pid = os.fork()
+          ^^^^^^^^^
+OSError: [Errno 12] Cannot allocate memory
