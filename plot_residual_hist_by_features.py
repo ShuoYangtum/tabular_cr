@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-Plot residual histograms by feature bins/categories.
+Plot feature-bin vs average error (generated vs baseline).
 
 For each selected feature:
-- x-axis: residual (pred - target)
-- y-axis: count
-- Facets: bins (numeric) or categories (categorical)
-- Compare generated vs baseline in each facet
+- x-axis: feature bins/categories
+- y-axis: mean error vs target (absolute or signed)
+- Compare generated and baseline on the same chart
 """
 
 from __future__ import annotations
 
 import argparse
-import math
 import re
 from pathlib import Path
 from typing import List
@@ -65,7 +63,7 @@ def read_features(features_file: Path) -> List[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Plot residual histograms conditioned on selected features.")
+    parser = argparse.ArgumentParser(description="Plot feature-bin vs average error (generated vs baseline).")
     parser.add_argument("--file", default=DEFAULT_FILE)
     parser.add_argument("--features-file", default=DEFAULT_FEATURES_FILE)
     parser.add_argument("--target-col", default=DEFAULT_TARGET_COL)
@@ -74,6 +72,12 @@ def main() -> int:
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     parser.add_argument("--max-bins", type=int, default=6, help="Max numeric bins / top categories per feature.")
     parser.add_argument("--numeric-like-threshold", type=float, default=0.75)
+    parser.add_argument(
+        "--error-type",
+        choices=["absolute", "signed"],
+        default="absolute",
+        help="Error definition: absolute=mean(|pred-target|), signed=mean(pred-target).",
+    )
     args = parser.parse_args()
 
     file_path = Path(args.file)
@@ -129,6 +133,7 @@ def main() -> int:
         numeric_like_ratio = (s_num.notna().sum() / non_null) if non_null > 0 else 0.0
 
         group_col = "__grp__"
+        group_order: List[str] = []
         if numeric_like_ratio >= args.numeric_like_threshold:
             tmp = s_num
             tmp_non_na = tmp.dropna()
@@ -137,54 +142,71 @@ def main() -> int:
                 continue
             bins = min(args.max_bins, int(tmp_non_na.nunique()))
             try:
-                dfx[group_col] = pd.qcut(tmp, q=bins, duplicates="drop").astype("string")
+                grp = pd.qcut(tmp, q=bins, duplicates="drop")
             except Exception:
-                dfx[group_col] = pd.cut(tmp, bins=bins, duplicates="drop").astype("string")
+                grp = pd.cut(tmp, bins=bins, duplicates="drop")
+            grp = grp.astype("string")
+            dfx[group_col] = grp
+            group_order = [str(v) for v in pd.Series(grp.dropna().unique()).tolist()]
         else:
             ss = s.astype("string").fillna("__MISSING__")
             top = ss.value_counts().head(args.max_bins).index
             dfx[group_col] = np.where(ss.isin(top), ss, "__OTHER__")
             dfx[group_col] = pd.Series(dfx[group_col], index=dfx.index, dtype="string")
+            group_order = list(top.astype(str)) + ["__OTHER__"]
 
         groups = dfx[group_col].fillna("__MISSING__").astype("string")
-        group_values = groups.value_counts().index.tolist()
-        n_panels = len(group_values)
-        if n_panels == 0:
+        if not group_order:
+            group_order = groups.value_counts().index.astype(str).tolist()
+        if "__MISSING__" in set(groups.astype(str)) and "__MISSING__" not in group_order:
+            group_order.append("__MISSING__")
+
+        if len(group_order) == 0:
             skipped.append(f"{feat} (no groups)")
             continue
 
-        cols = min(3, n_panels)
-        rows = int(math.ceil(n_panels / cols))
-        fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 3.8 * rows), squeeze=False)
-
-        lo = np.nanquantile(np.concatenate([dfx["res_generated"].to_numpy(), dfx["res_baseline"].to_numpy()]), 0.01)
-        hi = np.nanquantile(np.concatenate([dfx["res_generated"].to_numpy(), dfx["res_baseline"].to_numpy()]), 0.99)
-        bins = np.linspace(lo, hi, 70)
-
-        for i, g in enumerate(group_values):
-            r = i // cols
-            c = i % cols
-            ax = axes[r][c]
-            m = groups == g
-            if int(m.sum()) == 0:
-                ax.set_visible(False)
+        x_labels: List[str] = []
+        gen_mean_err: List[float] = []
+        base_mean_err: List[float] = []
+        for g in group_order:
+            m = groups.astype(str) == g
+            n = int(m.sum())
+            if n == 0:
                 continue
             rg = dfx.loc[m, "res_generated"].to_numpy(dtype=float)
             rb = dfx.loc[m, "res_baseline"].to_numpy(dtype=float)
-            ax.hist(rb, bins=bins, alpha=0.45, label="baseline")
-            ax.hist(rg, bins=bins, alpha=0.45, label="generated")
-            ax.axvline(0.0, color="black", linestyle="--", linewidth=1)
-            mae_g = float(np.mean(np.abs(rg)))
-            mae_b = float(np.mean(np.abs(rb)))
-            ax.set_title(f"{g}\n n={int(m.sum())}, MAE gen/base={mae_g:.2f}/{mae_b:.2f}")
-            ax.set_xlabel("residual = pred - target")
-            ax.set_ylabel("count")
-            ax.legend()
+            if args.error_type == "absolute":
+                gen_v = float(np.mean(np.abs(rg)))
+                base_v = float(np.mean(np.abs(rb)))
+            else:
+                gen_v = float(np.mean(rg))
+                base_v = float(np.mean(rb))
+            x_labels.append(f"{g}\n(n={n})")
+            gen_mean_err.append(gen_v)
+            base_mean_err.append(base_v)
 
-        for j in range(n_panels, rows * cols):
-            axes[j // cols][j % cols].set_visible(False)
+        if not x_labels:
+            skipped.append(f"{feat} (all groups empty)")
+            continue
 
-        fig.suptitle(f"Residual histograms conditioned on feature: {feat}")
+        x = np.arange(len(x_labels))
+        w = 0.38
+        fig_w = max(10, len(x_labels) * 1.7)
+        fig, ax = plt.subplots(1, 1, figsize=(fig_w, 5.5))
+        ax.bar(x - w / 2, base_mean_err, width=w, label="baseline", alpha=0.7)
+        ax.bar(x + w / 2, gen_mean_err, width=w, label="generated", alpha=0.7)
+        if args.error_type == "signed":
+            ax.axhline(0.0, color="black", linestyle="--", linewidth=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels, rotation=25, ha="right")
+        ax.set_xlabel(f"{feat} (binned/grouped)")
+        ax.set_ylabel(
+            "mean absolute error"
+            if args.error_type == "absolute"
+            else "mean signed error (pred-target)"
+        )
+        ax.set_title(f"Feature-conditioned average error: {feat}")
+        ax.legend()
         fig.tight_layout()
         out_png = out_dir / f"{sanitize_filename(feat)}.png"
         fig.savefig(out_png, dpi=150)
