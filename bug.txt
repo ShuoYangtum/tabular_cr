@@ -2,21 +2,106 @@
 Correction regressor (OOF fold 1/3): [##############################] 300/300
 Correction regressor (OOF fold 2/3): [##############################] 300/300
 Correction regressor (OOF fold 3/3): [##############################] 300/300
-Traceback (most recent call last):
-  File "/home/yangsext/tabular/train_and_generate.py", line 1926, in <module>
-    sys.exit(main())
-             ^^^^^^
-  File "/home/yangsext/tabular/train_and_generate.py", line 1621, in main
-    gate_pre_fold, gate_model_fold = fit_gbdt_classifier_with_progress(
-                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/yangsext/tabular/train_and_generate.py", line 675, in fit_gbdt_classifier_with_progress
-    model.fit(x_train_t, y_train)
-  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/base.py", line 1474, in wrapper
-    return fit_method(estimator, *args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/ensemble/_gb.py", line 665, in fit
-    y = self._encode_y(y=y, sample_weight=None)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/yangsext/.conda/envs/gptq/lib/python3.11/site-packages/sklearn/ensemble/_gb.py", line 1520, in _encode_y
-    raise ValueError(
-ValueError: y contains 1 class after sample_weight trimmed classes with zero weights, while a minimum of 2 classes are required.
+Correction gate classifier (OOF fold 1/3, q=0.10): [##############################] 300/300
+Correction gate classifier (OOF fold 2/3, q=0.10): [##############################] 300/300
+Correction gate classifier (OOF fold 3/3, q=0.10): [##############################] 300/300
+Correction gate classifier (OOF fold 1/3, q=0.20): [##############################] 300/300
+Correction gate classifier (OOF fold 2/3, q=0.20): [##############################] 300/300 
+Correction gate classifier (OOF fold 3/3, q=0.20): [##############################] 300/300
+Correction gate classifier (OOF fold 1/3, q=0.30): [##############################] 300/300
+Correction gate classifier (OOF fold 2/3, q=0.30): [##############################] 300/300
+Correction gate classifier (OOF fold 3/3, q=0.30): [##############################] 300/300
+Correction gate classifier (OOF fold 1/3, q=0.50): [##############################] 300/300
+Correction gate classifier (OOF fold 2/3, q=0.50): [##############################] 300/300
+Correction gate classifier (OOF fold 3/3, q=0.50): [##############################] 300/300
+Correction regressor (final): [##############################] 300/300
+=== Training Summary ===
+Train file: ../modified/train_3_clean.csv
+Test file: ../modified/test_3_clean.csv
+Output file: generated.csv
+Target column: esg_firma_esg-bewertung__input__wasserverbrauch-m3
+Baseline column: esg_firma_wasser_berechnet
+Generated column: generated
+Model type: gbdt
+Feature semantics mode: cache
+LLM profiling used: no
+Feature semantic cache used: yes
+Feature semantic cache file: feature_semantic_cache.json
+Dropped id-like columns: 19
+Datetime-expanded columns: 19
+Year-transformed columns: 12
+Alpha candidates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+Best alpha (validation): 1.0
+Segmented alpha used: no
+Baseline alpha bins: 10, min bin rows: 80
+Tuning objective: hybrid
+Validation mode: OOF (3-fold)
+Validation relative gain: 0.521358
+Fallback to baseline correction: no
+Post-hoc calibration enabled/used: no/no
+Post-hoc calibration method: isotonic
+Gate quantile selected: 0.0
+Gate threshold |corr_log| (validation/final): 0.000000/0.000000
+Ratio coverage: 98.00%
+Ratio clip range (validation): [0.001673, 139.219517]
+Ratio clip range (final): [0.001673, 139.219517]
+Original train rows: 8206
+Valid train rows used: 7814
+Dropped rows (invalid target): 0
+Dropped rows (invalid baseline): 0
+Dropped rows (target approximately zero): 253
+Dropped rows (baseline approximately zero): 222
+Dropped rows (invalid target/baseline ratio): 222
+Dropped rows (invalid target/baseline union): 392
+Feature count: 471
+Numeric features: 351
+Categorical features: 120
+Dropped feature cols (sparse/constant): 101/53
+Dropped feature cols (high-unique id-like): 0
+Test file contains target column: yes (excluded from features)
+Rows with near-zero baseline in test: 72 (generated becomes NaN for these rows)
+
+=== Validation Metrics (OOF (3-fold)) ===
+Gate accuracy : 1.000000
+---
+Baseline MAE  : 1384355.026133
+Baseline RMSE : 16943213.091632
+Baseline R2   : 0.024313
+Baseline TrimmedRMSE90 : 82193.388193
+---
+MAE  : 469525.608584
+RMSE : 8132684.209708
+R2   : 0.775205
+TrimmedRMSE90 : 4916.616742
+
+Prediction complete. New file written with generated column.
+(gptq) [yangsext@tux100p700 ~/tabular]# python3 measure_error.py
+/home/yangsext/tabular/measure_error.py:90: DtypeWarning: Columns (298,301,302,303,308,310,427,428,429,431) have mixed types. Specify dtype option on import or set low_memory=False.
+  return pd.read_csv(file_path)
+=== Data Cleaning Summary ===
+File: generated.csv
+Total rows: 2759
+Used rows (shared by generated & baseline): 2609
+Dropped rows: 150
+Rows with invalid values (target/generated/baseline): 0/72/0
+Rows filtered by zero value (target/baseline): 78/0
+
+=== Error Metrics Comparison (target=true) ===
+        metric  generated (generated) esg_firma_wasser_berechnet (baseline)
+    count_used                   2609                                  2609
+           MAE         2156842.862919                        3025381.696079
+           MSE 538483690470972.125000                902561948944706.625000
+          RMSE        23205251.355479                       30042668.805296
+      MedianAE              14.189224                           1197.000000
+         P90AE            7281.259579                         134116.800000
+         P95AE           60316.933340                         927763.200000
+  TrimmedMAE90            1646.892947                          26756.292597
+ TrimmedRMSE90            6899.846666                         101377.905874
+Bias(mean err)         -847765.161613                       -2820166.151579
+       MAPE(%)              51.742617                          23080.035410
+      MdAPE(%)               8.035922                            180.737246
+      sMAPE(%)              14.324398                            119.553613
+       WAPE(%)              69.220134                             97.094383
+ nMAE/med(|y|)           10003.909383                          14032.382635
+            R2               0.442850                              0.066151
+(gptq) [yangsext@tux100p700 ~/tabular]# 
