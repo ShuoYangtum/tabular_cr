@@ -1210,8 +1210,8 @@ def main() -> int:
     if not (0.0 < args.ratio_coverage <= 1.0):
         print("[ERROR] --ratio-coverage must be in (0, 1].")
         return 1
-    if not (0.0 < args.gate_quantile < 1.0):
-        print("[ERROR] --gate-quantile must be in (0, 1).")
+    if not (0.0 <= args.gate_quantile < 1.0):
+        print("[ERROR] --gate-quantile must be in [0, 1).")
         return 1
     if args.baseline_alpha_bins < 2:
         print("[ERROR] --baseline-alpha-bins must be >= 2.")
@@ -1247,9 +1247,9 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERROR] Invalid --gate-quantile-candidates: {exc}")
         return 1
-    gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 < q < 1.0]
+    gate_quantile_candidates = [q for q in gate_quantile_candidates if 0.0 <= q < 1.0]
     if not gate_quantile_candidates:
-        print("[ERROR] No valid gate quantile candidates in (0,1).")
+        print("[ERROR] No valid gate quantile candidates in [0,1).")
         return 1
     try:
         resolved_tabpfn_device = resolve_tabpfn_device(args.tabpfn_device)
@@ -1386,12 +1386,20 @@ def main() -> int:
 
     target_all = train_df[target_col].map(extract_numeric)
     baseline_train_all = train_df[baseline_col].map(extract_numeric)
+    target_nonzero_mask = target_all.abs() > BASELINE_EPS
     baseline_nonzero_mask = baseline_train_all.abs() > BASELINE_EPS
     ratio_all = target_all / baseline_train_all
     ratio_finite_mask = ratio_all.notna() & np.isfinite(ratio_all) & (ratio_all.abs() <= FLOAT32_SAFE_MAX)
-    valid_train_mask = target_all.notna() & baseline_train_all.notna() & baseline_nonzero_mask & ratio_finite_mask
+    valid_train_mask = (
+        target_all.notna()
+        & baseline_train_all.notna()
+        & target_nonzero_mask
+        & baseline_nonzero_mask
+        & ratio_finite_mask
+    )
     dropped_target_rows = int(target_all.isna().sum())
     dropped_baseline_rows = int(baseline_train_all.isna().sum())
+    dropped_zero_target_rows = int((target_all.notna() & (~target_nonzero_mask)).sum())
     dropped_zero_baseline_rows = int((baseline_train_all.notna() & (~baseline_nonzero_mask)).sum())
     dropped_invalid_ratio_rows = int((~ratio_finite_mask).sum())
     dropped_train_rows = int((~valid_train_mask).sum())
@@ -1889,6 +1897,7 @@ def main() -> int:
     print(f"Valid train rows used: {len(y_train_ratio)}")
     print(f"Dropped rows (invalid target): {dropped_target_rows}")
     print(f"Dropped rows (invalid baseline): {dropped_baseline_rows}")
+    print(f"Dropped rows (target approximately zero): {dropped_zero_target_rows}")
     print(f"Dropped rows (baseline approximately zero): {dropped_zero_baseline_rows}")
     print(f"Dropped rows (invalid target/baseline ratio): {dropped_invalid_ratio_rows}")
     print(f"Dropped rows (invalid target/baseline union): {dropped_train_rows}")

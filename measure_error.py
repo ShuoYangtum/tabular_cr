@@ -217,6 +217,9 @@ def prepare_joint_data(
     invalid_baseline = int(cleaned["baseline"].isna().sum())
 
     cleaned = cleaned.dropna(subset=["target", "generated", "baseline"])
+    zero_target_rows = int((cleaned["target"] == 0).sum())
+    zero_baseline_rows = int((cleaned["baseline"] == 0).sum())
+    cleaned = cleaned[(cleaned["target"] != 0) & (cleaned["baseline"] != 0)]
     used_count = len(cleaned)
     dropped_count = raw_count - used_count
 
@@ -230,6 +233,8 @@ def prepare_joint_data(
         "invalid_target_rows": invalid_target,
         "invalid_generated_rows": invalid_generated,
         "invalid_baseline_rows": invalid_baseline,
+        "zero_target_rows": zero_target_rows,
+        "zero_baseline_rows": zero_baseline_rows,
     }
 
     return (
@@ -305,6 +310,10 @@ def main() -> int:
         f"{info['invalid_target_rows']}/"
         f"{info['invalid_generated_rows']}/"
         f"{info['invalid_baseline_rows']}"
+    )
+    print(
+        "Rows filtered by zero value (target/baseline): "
+        f"{info['zero_target_rows']}/{info['zero_baseline_rows']}"
     )
     print()
 
