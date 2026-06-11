@@ -51,8 +51,8 @@ from sklearn.preprocessing import OrdinalEncoder
 # =========================
 # Editable defaults (quick way)
 # =========================
-DEFAULT_TRAIN_FILE = "../modified/train_3_clean.csv"
-DEFAULT_TEST_FILE = "../modified/test_3_clean.csv"
+DEFAULT_TRAIN_FILE = "train_clean.csv"
+DEFAULT_TEST_FILE = "test_clean.csv"
 DEFAULT_OUTPUT_FILE = "generated.csv"
 DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
@@ -97,6 +97,42 @@ NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 MISSING_STRINGS = {"", "nan", "none", "null", "na", "n/a", "-", "--", "unknown"}
 FLOAT32_SAFE_MAX = np.finfo(np.float32).max * 0.99
 BASELINE_EPS = 1e-12
+
+
+def ensure_baseline_column(df: pd.DataFrame, baseline_col: str) -> bool:
+    """Add *baseline_col* filled with 0.0 when missing. Returns True if created."""
+    if baseline_col not in df.columns:
+        df[baseline_col] = 0.0
+        return True
+    return False
+
+
+def is_zero_baseline_mode(base: np.ndarray, baseline_was_synthetic: bool = False) -> bool:
+    if baseline_was_synthetic:
+        return True
+    valid = base[np.isfinite(base)]
+    if valid.size == 0:
+        return True
+    return float(np.max(np.abs(valid))) <= BASELINE_EPS
+
+
+def apply_ratio_clip(
+    y_pred: np.ndarray,
+    base: np.ndarray,
+    ratio_lower: float,
+    ratio_upper: float,
+    zero_baseline_mode: bool,
+) -> np.ndarray:
+    out = np.asarray(y_pred, dtype=float).copy()
+    if zero_baseline_mode:
+        return out
+    valid = np.isfinite(base) & (np.abs(base) > BASELINE_EPS)
+    if not np.any(valid):
+        return out
+    ratio = out[valid] / base[valid]
+    ratio = np.clip(ratio, ratio_lower, ratio_upper)
+    out[valid] = base[valid] * ratio
+    return out
 
 
 def extract_numeric(value) -> float:
@@ -882,15 +918,16 @@ def pick_best_alpha(
     sample_weight: np.ndarray | None = None,
 ) -> Tuple[float, Dict[str, float]]:
     base_slog = signed_log1p(base)
+    zero_base = is_zero_baseline_mode(base)
     best_alpha = alpha_candidates[0]
     best_score = float("inf")
     best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan, "trimmed_rmse90": np.nan}
     for alpha in alpha_candidates:
         y_slog_pred = base_slog + alpha * gate_prob * corr_pred
         y_pred = signed_expm1(y_slog_pred)
-        y_ratio_pred = y_pred / base
-        y_ratio_pred = np.clip(y_ratio_pred, ratio_lower, ratio_upper)
-        y_pred = base * y_ratio_pred
+        y_pred = apply_ratio_clip(
+            y_pred, base, ratio_lower, ratio_upper, zero_baseline_mode=zero_base
+        )
         metrics = evaluate_predictions(y_true, y_pred, sample_weight=sample_weight)
         score = objective_value(metrics, objective)
         if score < best_score:
@@ -947,9 +984,9 @@ def fit_segmented_alpha(
 
     pred_slog = signed_log1p(base) + alpha_by_bin[bin_idx] * gate_prob * corr_pred
     pred = signed_expm1(pred_slog)
-    pred_ratio = pred / base
-    pred_ratio = np.clip(pred_ratio, ratio_lower, ratio_upper)
-    pred = base * pred_ratio
+    pred = apply_ratio_clip(
+        pred, base, ratio_lower, ratio_upper, zero_baseline_mode=is_zero_baseline_mode(base)
+    )
     metrics = evaluate_predictions(y_true, pred, sample_weight=sample_weight)
     return edges, alpha_by_bin, metrics
 
@@ -1388,17 +1425,19 @@ def main() -> int:
         print(f"[ERROR] target column '{target_col}' not found in train file.")
         print(f"Available columns: {list(train_df.columns)}")
         return 1
-    if baseline_col not in train_df.columns:
-        print(f"[ERROR] baseline column '{baseline_col}' not found in train file.")
-        print(f"Available columns: {list(train_df.columns)}")
-        return 1
-    if baseline_col not in test_df.columns:
+    baseline_missing_train = ensure_baseline_column(train_df, baseline_col)
+    baseline_missing_test = ensure_baseline_column(test_df, baseline_col)
+    baseline_was_synthetic = baseline_missing_train or baseline_missing_test
+    if baseline_was_synthetic:
+        missing_parts = []
+        if baseline_missing_train:
+            missing_parts.append("train")
+        if baseline_missing_test:
+            missing_parts.append("test")
         print(
-            f"[ERROR] baseline column '{baseline_col}' not found in test file. "
-            "Ratio recovery requires baseline in test."
+            f"[WARN] Baseline column '{baseline_col}' missing in "
+            f"{', '.join(missing_parts)}; using synthetic all-zero baseline."
         )
-        print(f"Available columns: {list(test_df.columns)}")
-        return 1
 
     # Build feature set from train columns excluding target and baseline.
     feature_cols = [c for c in train_df.columns if c not in {target_col, baseline_col}]
@@ -1480,13 +1519,13 @@ def main() -> int:
     baseline_positive_mask = baseline_train_all > BASELINE_EPS
     ratio_all = target_all / baseline_train_all
     ratio_finite_mask = ratio_all.notna() & np.isfinite(ratio_all) & (ratio_all.abs() <= FLOAT32_SAFE_MAX)
-    valid_train_mask = (
-        target_all.notna()
-        & baseline_train_all.notna()
-        & target_positive_mask
-        & baseline_positive_mask
-        & ratio_finite_mask
+    zero_baseline_mode = is_zero_baseline_mode(
+        baseline_train_all.to_numpy(dtype=float),
+        baseline_was_synthetic=baseline_was_synthetic,
     )
+    valid_train_mask = target_all.notna() & baseline_train_all.notna() & target_positive_mask
+    if not zero_baseline_mode:
+        valid_train_mask = valid_train_mask & baseline_positive_mask & ratio_finite_mask
     dropped_target_rows = int(target_all.isna().sum())
     dropped_baseline_rows = int(baseline_train_all.isna().sum())
     dropped_non_positive_target_rows = int((target_all.notna() & (~target_positive_mask)).sum())
@@ -1501,13 +1540,17 @@ def main() -> int:
 
     lower_q = (1.0 - args.ratio_coverage) / 2.0
     upper_q = 1.0 - lower_q
-    ratio_lower = float(np.quantile(y_train_ratio, lower_q))
-    ratio_upper = float(np.quantile(y_train_ratio, upper_q))
-    if not np.isfinite(ratio_lower) or not np.isfinite(ratio_upper):
-        print("[ERROR] Failed to compute valid ratio quantile range from train data.")
-        return 1
-    if ratio_lower > ratio_upper:
-        ratio_lower, ratio_upper = ratio_upper, ratio_lower
+    if zero_baseline_mode:
+        ratio_lower = 0.0
+        ratio_upper = float("inf")
+    else:
+        ratio_lower = float(np.quantile(y_train_ratio, lower_q))
+        ratio_upper = float(np.quantile(y_train_ratio, upper_q))
+        if not np.isfinite(ratio_lower) or not np.isfinite(ratio_upper):
+            print("[ERROR] Failed to compute valid ratio quantile range from train data.")
+            return 1
+        if ratio_lower > ratio_upper:
+            ratio_lower, ratio_upper = ratio_upper, ratio_lower
 
     if len(y_train_ratio) < 20:
         print("[ERROR] Too few valid training rows after cleaning target/baseline (<20).")
@@ -1583,11 +1626,15 @@ def main() -> int:
         y_corr_val_true = y_corr_full_true[va_idx]
         w_val = validation_sample_weights[va_idx]
 
-        ratio_tr = y_train_ratio[tr_idx]
-        ratio_lower_val = float(np.quantile(ratio_tr, lower_q))
-        ratio_upper_val = float(np.quantile(ratio_tr, upper_q))
-        if ratio_lower_val > ratio_upper_val:
-            ratio_lower_val, ratio_upper_val = ratio_upper_val, ratio_lower_val
+        if zero_baseline_mode:
+            ratio_lower_val = 0.0
+            ratio_upper_val = float("inf")
+        else:
+            ratio_tr = y_train_ratio[tr_idx]
+            ratio_lower_val = float(np.quantile(ratio_tr, lower_q))
+            ratio_upper_val = float(np.quantile(ratio_tr, upper_q))
+            if ratio_lower_val > ratio_upper_val:
+                ratio_lower_val, ratio_upper_val = ratio_upper_val, ratio_lower_val
 
         corr_pre_val, corr_model_val = fit_gbdt_with_progress(
             x_train=x_tr,
@@ -1887,11 +1934,13 @@ def main() -> int:
         val_alpha = np.full_like(selected_gate_prob_val, best_alpha, dtype=float)
     val_slog_pred = signed_log1p(base_val) + val_alpha * selected_gate_prob_val * corr_pred_val
     val_pred_selected = signed_expm1(val_slog_pred)
-    val_valid_base = np.abs(base_val) > BASELINE_EPS
-    val_ratio_pred = np.full_like(val_pred_selected, np.nan, dtype=float)
-    val_ratio_pred[val_valid_base] = val_pred_selected[val_valid_base] / base_val[val_valid_base]
-    val_ratio_pred = np.clip(val_ratio_pred, ratio_lower_val, ratio_upper_val)
-    val_pred_selected[val_valid_base] = base_val[val_valid_base] * val_ratio_pred[val_valid_base]
+    val_pred_selected = apply_ratio_clip(
+        val_pred_selected,
+        base_val,
+        ratio_lower_val,
+        ratio_upper_val,
+        zero_baseline_mode=zero_baseline_mode,
+    )
 
     # Optional post-hoc calibration fitted only on validation predictions (leak-safe for test).
     calibration_used = False
@@ -1970,11 +2019,13 @@ def main() -> int:
 
     test_slog_pred = signed_log1p(baseline_test) + test_alpha * gate_prob_test * corr_pred_test
     test_pred = signed_expm1(test_slog_pred)
-    valid_test_base = np.abs(baseline_test) > BASELINE_EPS
-    test_ratio_pred = np.full_like(test_pred, np.nan, dtype=float)
-    test_ratio_pred[valid_test_base] = test_pred[valid_test_base] / baseline_test[valid_test_base]
-    test_ratio_pred = np.clip(test_ratio_pred, ratio_lower, ratio_upper)
-    test_pred = baseline_test * test_ratio_pred
+    test_pred = apply_ratio_clip(
+        test_pred,
+        baseline_test,
+        ratio_lower,
+        ratio_upper,
+        zero_baseline_mode=zero_baseline_mode,
+    )
 
     if calibration_used and calibrator is not None:
         valid_pred = np.isfinite(test_pred)
@@ -2004,6 +2055,12 @@ def main() -> int:
     print(f"Output file: {output_path}")
     print(f"Target column: {target_col}")
     print(f"Baseline column: {baseline_col}")
+    print(
+        "Zero-baseline mode (synthetic/missing baseline): "
+        f"{'yes' if zero_baseline_mode else 'no'}"
+    )
+    if baseline_was_synthetic:
+        print("Baseline column was missing and filled with zeros.")
     print(f"Generated column: {generated_col}")
     print(f"Model type: {args.model_type}")
     print(f"N estimators: {args.n_estimators}")
@@ -2057,8 +2114,11 @@ def main() -> int:
     )
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
-    print(f"Ratio clip range (validation): [{fmt(ratio_lower_val)}, {fmt(ratio_upper_val)}]")
-    print(f"Ratio clip range (final): [{fmt(ratio_lower)}, {fmt(ratio_upper)}]")
+    if zero_baseline_mode:
+        print("Ratio clip: disabled (zero baseline mode)")
+    else:
+        print(f"Ratio clip range (validation): [{fmt(ratio_lower_val)}, {fmt(ratio_upper_val)}]")
+        print(f"Ratio clip range (final): [{fmt(ratio_lower)}, {fmt(ratio_upper)}]")
     print(f"Original train rows: {len(train_df)}")
     print(f"Valid train rows used: {len(y_train_ratio)}")
     print(f"Dropped rows (invalid target): {dropped_target_rows}")
@@ -2098,10 +2158,15 @@ def main() -> int:
             "Rows with missing/invalid baseline in test: "
             f"{missing_test_baseline_rows} (generated becomes NaN for these rows)"
         )
-    if near_zero_test_baseline_rows > 0:
+    if near_zero_test_baseline_rows > 0 and not zero_baseline_mode:
         print(
             "Rows with near-zero baseline in test: "
-            f"{near_zero_test_baseline_rows} (generated becomes NaN for these rows)"
+            f"{near_zero_test_baseline_rows} (generated uses direct log prediction for these rows)"
+        )
+    elif near_zero_test_baseline_rows > 0 and zero_baseline_mode:
+        print(
+            "Rows with near-zero baseline in test: "
+            f"{near_zero_test_baseline_rows} (zero-baseline mode: direct prediction, no ratio clip)"
         )
     print()
 
