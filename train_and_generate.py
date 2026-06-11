@@ -19,7 +19,6 @@ Supports:
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import json
 import math
@@ -65,15 +64,7 @@ DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
-DEFAULT_MODEL_TYPE = "tabpfn"
-DEFAULT_TABPFN_REG_MODEL_PATH = "../modified/TabPFN-v2-reg"
-DEFAULT_TABPFN_CLF_MODEL_PATH = "../modified/TabPFN-v2-clf"
-DEFAULT_TABPFN_DEVICE = "auto"
-DEFAULT_TABPFN_N_ESTIMATORS = 2
-DEFAULT_TABPFN_FIT_MODE = "fit_preprocessors"
-DEFAULT_TABPFN_INFERENCE_PRECISION = "auto"
-DEFAULT_TABPFN_PREPROCESSING_JOBS = 1
-DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS = True
+DEFAULT_MODEL_TYPE = "hgbt"
 DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
@@ -612,72 +603,9 @@ def fit_gbdt_with_progress(
     n_estimators: int,
     prefix: str,
     model_type: str,
-    tabpfn_model_path: str | None = None,
-    tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
-    tabpfn_n_estimators: int = DEFAULT_TABPFN_N_ESTIMATORS,
-    tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
-    tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
-    tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
-    tabpfn_ignore_pretraining_limits: bool = DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
-
-    if model_type == "tabpfn":
-        try:
-            configure_tabpfn_runtime(disable_telemetry=True)
-            from tabpfn import TabPFNRegressor
-        except Exception as exc:
-            raise RuntimeError(
-                "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
-            ) from exc
-        model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="reg")
-        resolved_device = resolve_tabpfn_device(tabpfn_device)
-        model_kwargs: Dict[str, Any] = {
-            "device": resolved_device,
-            "n_estimators": int(tabpfn_n_estimators),
-            "fit_mode": tabpfn_fit_mode,
-            "inference_precision": tabpfn_inference_precision,
-            "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
-            "ignore_pretraining_limits": bool(tabpfn_ignore_pretraining_limits),
-        }
-        if model_path:
-            model_kwargs["model_path"] = model_path
-        try:
-            model = TabPFNRegressor(**model_kwargs)
-        except TypeError:
-            # Compatibility fallback for older TabPFN versions.
-            fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
-            if model_path:
-                fallback_kwargs["model_path"] = model_path
-            model = TabPFNRegressor(**fallback_kwargs)
-        print_progress_bar(0, 1, prefix=prefix)
-        release_runtime_memory()
-        try:
-            model.fit(x_train_t, y_train)
-        except Exception as exc:
-            is_mem_oom = is_memory_oom_error(exc)
-            can_retry = int(tabpfn_preprocessing_jobs) != 1
-            if (not is_mem_oom) or (not can_retry):
-                raise
-            print(
-                f"\n[WARN] TabPFN regressor OOM during fit ({exc}). "
-                "Retrying with n_preprocessing_jobs=1."
-            )
-            release_runtime_memory()
-            retry_kwargs = dict(model_kwargs)
-            retry_kwargs["n_preprocessing_jobs"] = 1
-            try:
-                model = TabPFNRegressor(**retry_kwargs)
-            except TypeError:
-                retry_fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
-                if model_path:
-                    retry_fallback_kwargs["model_path"] = model_path
-                model = TabPFNRegressor(**retry_fallback_kwargs)
-            model.fit(x_train_t, y_train)
-        release_runtime_memory()
-        print_progress_bar(1, 1, prefix=prefix)
-        return preprocessor, model
 
     model = build_regressor(model_type=model_type, n_estimators=1)
     for i in range(1, n_estimators + 1):
@@ -699,71 +627,9 @@ def fit_gbdt_classifier_with_progress(
     n_estimators: int,
     prefix: str,
     model_type: str,
-    tabpfn_model_path: str | None = None,
-    tabpfn_device: str = DEFAULT_TABPFN_DEVICE,
-    tabpfn_n_estimators: int = DEFAULT_TABPFN_N_ESTIMATORS,
-    tabpfn_fit_mode: str = DEFAULT_TABPFN_FIT_MODE,
-    tabpfn_inference_precision: str = DEFAULT_TABPFN_INFERENCE_PRECISION,
-    tabpfn_preprocessing_jobs: int = DEFAULT_TABPFN_PREPROCESSING_JOBS,
-    tabpfn_ignore_pretraining_limits: bool = DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
 ):
     preprocessor = build_preprocessor(numeric_cols, categorical_cols)
     x_train_t = preprocessor.fit_transform(x_train)
-
-    if model_type == "tabpfn":
-        try:
-            configure_tabpfn_runtime(disable_telemetry=True)
-            from tabpfn import TabPFNClassifier
-        except Exception as exc:
-            raise RuntimeError(
-                "model_type='tabpfn' requires the 'tabpfn' package. Install with: pip install tabpfn"
-            ) from exc
-        model_path = resolve_tabpfn_model_path(tabpfn_model_path or "", task="clf")
-        resolved_device = resolve_tabpfn_device(tabpfn_device)
-        model_kwargs: Dict[str, Any] = {
-            "device": resolved_device,
-            "n_estimators": int(tabpfn_n_estimators),
-            "fit_mode": tabpfn_fit_mode,
-            "inference_precision": tabpfn_inference_precision,
-            "n_preprocessing_jobs": int(tabpfn_preprocessing_jobs),
-            "ignore_pretraining_limits": bool(tabpfn_ignore_pretraining_limits),
-        }
-        if model_path:
-            model_kwargs["model_path"] = model_path
-        try:
-            model = TabPFNClassifier(**model_kwargs)
-        except TypeError:
-            fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
-            if model_path:
-                fallback_kwargs["model_path"] = model_path
-            model = TabPFNClassifier(**fallback_kwargs)
-        print_progress_bar(0, 1, prefix=prefix)
-        release_runtime_memory()
-        try:
-            model.fit(x_train_t, y_train)
-        except Exception as exc:
-            is_mem_oom = is_memory_oom_error(exc)
-            can_retry = int(tabpfn_preprocessing_jobs) != 1
-            if (not is_mem_oom) or (not can_retry):
-                raise
-            print(
-                f"\n[WARN] TabPFN classifier OOM during fit ({exc}). "
-                "Retrying with n_preprocessing_jobs=1."
-            )
-            release_runtime_memory()
-            retry_kwargs = dict(model_kwargs)
-            retry_kwargs["n_preprocessing_jobs"] = 1
-            try:
-                model = TabPFNClassifier(**retry_kwargs)
-            except TypeError:
-                retry_fallback_kwargs: Dict[str, Any] = {"device": resolved_device}
-                if model_path:
-                    retry_fallback_kwargs["model_path"] = model_path
-                model = TabPFNClassifier(**retry_fallback_kwargs)
-            model.fit(x_train_t, y_train)
-        release_runtime_memory()
-        print_progress_bar(1, 1, prefix=prefix)
-        return preprocessor, model
 
     model = build_classifier(model_type=model_type, n_estimators=1)
     for i in range(1, n_estimators + 1):
@@ -971,112 +837,6 @@ def apply_posthoc_calibrator(
         bin_idx = np.digitize(base, edges[1:-1], right=False)
         return x + bias_by_bin[bin_idx]
     return calibrator.predict(x.reshape(-1, 1))
-
-
-def resolve_tabpfn_model_path(path_like: str, task: str) -> str | None:
-    if not path_like:
-        return None
-    p = Path(path_like)
-    if p.is_file():
-        return str(p)
-    if p.is_dir():
-        candidates = sorted(p.glob("*.ckpt"))
-        if not candidates:
-            return None
-        task_hint = "reg" if task == "reg" else "clf"
-        # Prefer task-matching file names first.
-        for c in candidates:
-            name = c.name.lower()
-            if task_hint in name or ("regressor" in name and task == "reg") or ("classifier" in name and task == "clf"):
-                return str(c)
-        return str(candidates[0])
-    return None
-
-
-def configure_tabpfn_runtime(disable_telemetry: bool = True) -> None:
-    if not disable_telemetry:
-        return
-    # Avoid proxy-related noise/failures from telemetry in restricted networks.
-    os.environ.setdefault("TABPFN_DISABLE_TELEMETRY", "1")
-    os.environ.setdefault("POSTHOG_DISABLED", "1")
-    os.environ.setdefault("DO_NOT_TRACK", "1")
-
-
-def is_memory_oom_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return (
-        ("cannot allocate memory" in msg)
-        or ("errno 12" in msg)
-        or ("out of memory" in msg)
-        or ("cuda out of memory" in msg)
-    )
-
-
-def release_runtime_memory() -> None:
-    """Best-effort memory cleanup between heavy fits."""
-    gc.collect()
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            if hasattr(torch.cuda, "ipc_collect"):
-                torch.cuda.ipc_collect()
-    except Exception:
-        return
-
-
-def resolve_tabpfn_device(device_setting: str) -> str | list[str]:
-    raw = str(device_setting).strip()
-    d = raw.lower()
-    if d == "auto":
-        try:
-            import torch
-
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            return "cpu"
-    if d == "cpu" or d == "mps" or d.startswith("cuda"):
-        return raw
-    if "," in raw:
-        devices = [p.strip() for p in raw.split(",") if p.strip()]
-        if devices and all(p.lower().startswith("cuda") for p in devices):
-            return devices
-    raise ValueError(
-        "Invalid tabpfn device. Use auto/cpu/cuda/cuda:0 or comma-separated cuda devices."
-    )
-
-
-def get_torch_cuda_runtime_info() -> Dict[str, Any]:
-    info: Dict[str, Any] = {
-        "torch_import_ok": False,
-        "torch_version": None,
-        "cuda_compiled_version": None,
-        "cuda_available": False,
-        "cuda_device_count": 0,
-        "cuda_devices": [],
-    }
-    try:
-        import torch
-
-        info["torch_import_ok"] = True
-        info["torch_version"] = getattr(torch, "__version__", None)
-        info["cuda_compiled_version"] = getattr(torch.version, "cuda", None)
-        cuda_ok = bool(torch.cuda.is_available())
-        info["cuda_available"] = cuda_ok
-        if cuda_ok:
-            n = int(torch.cuda.device_count())
-            info["cuda_device_count"] = n
-            names: List[str] = []
-            for i in range(n):
-                try:
-                    names.append(str(torch.cuda.get_device_name(i)))
-                except Exception:
-                    names.append(f"cuda:{i}")
-            info["cuda_devices"] = names
-    except Exception:
-        return info
-    return info
 
 
 def drop_high_unique_id_like_features(
@@ -1294,74 +1054,8 @@ def main() -> int:
     parser.add_argument(
         "--model-type",
         default=DEFAULT_MODEL_TYPE,
-        choices=["gbdt", "hgbt", "tabpfn"],
+        choices=["gbdt", "hgbt"],
         help=f"Model family for regressor/classifier (default: {DEFAULT_MODEL_TYPE}).",
-    )
-    parser.add_argument(
-        "--tabpfn-reg-model-path",
-        default=DEFAULT_TABPFN_REG_MODEL_PATH,
-        help=(
-            "Local TabPFN regressor weights path (file or directory). "
-            f"Default: {DEFAULT_TABPFN_REG_MODEL_PATH}"
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-clf-model-path",
-        default=DEFAULT_TABPFN_CLF_MODEL_PATH,
-        help=(
-            "Local TabPFN classifier weights path (file or directory). "
-            f"Default: {DEFAULT_TABPFN_CLF_MODEL_PATH}"
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-device",
-        default=DEFAULT_TABPFN_DEVICE,
-        help=(
-            "TabPFN compute device. Supports auto/cpu/cuda/cuda:0/"
-            "cuda:0,cuda:1. auto chooses cuda when available, else cpu "
-            f"(default: {DEFAULT_TABPFN_DEVICE})."
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-n-estimators",
-        type=int,
-        default=DEFAULT_TABPFN_N_ESTIMATORS,
-        help=(
-            "TabPFN ensemble estimators. Higher values improve quality and GPU usage "
-            f"but increase runtime/memory (default: {DEFAULT_TABPFN_N_ESTIMATORS})."
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-fit-mode",
-        default=DEFAULT_TABPFN_FIT_MODE,
-        choices=["low_memory", "fit_preprocessors", "fit_with_cache", "batched"],
-        help=f"TabPFN fit_mode (default: {DEFAULT_TABPFN_FIT_MODE}).",
-    )
-    parser.add_argument(
-        "--tabpfn-inference-precision",
-        default=DEFAULT_TABPFN_INFERENCE_PRECISION,
-        help=(
-            "TabPFN inference precision: auto/autocast/torch.float32/... "
-            f"(default: {DEFAULT_TABPFN_INFERENCE_PRECISION})."
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-preprocessing-jobs",
-        type=int,
-        default=DEFAULT_TABPFN_PREPROCESSING_JOBS,
-        help=(
-            "TabPFN n_preprocessing_jobs for CPU-side preprocessing "
-            f"(default: {DEFAULT_TABPFN_PREPROCESSING_JOBS})."
-        ),
-    )
-    parser.add_argument(
-        "--tabpfn-ignore-pretraining-limits",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS,
-        help=(
-            "Allow TabPFN to run outside official pretraining limits (e.g., >500 features). "
-            f"(default: {DEFAULT_TABPFN_IGNORE_PRETRAINING_LIMITS})"
-        ),
     )
     parser.add_argument(
         "--enable-posthoc-calibration",
@@ -1659,12 +1353,6 @@ def main() -> int:
     if args.llm_max_new_tokens <= 0:
         print("[ERROR] --llm-max-new-tokens must be positive.")
         return 1
-    if args.tabpfn_n_estimators <= 0:
-        print("[ERROR] --tabpfn-n-estimators must be positive.")
-        return 1
-    if args.tabpfn_preprocessing_jobs <= 0:
-        print("[ERROR] --tabpfn-preprocessing-jobs must be positive.")
-        return 1
     if args.auto_prune_max_features <= 0:
         print("[ERROR] --auto-prune-max-features must be positive.")
         return 1
@@ -1685,38 +1373,6 @@ def main() -> int:
     if not gate_quantile_candidates:
         print("[ERROR] No valid gate quantile candidates in [0,1).")
         return 1
-    try:
-        resolved_tabpfn_device = resolve_tabpfn_device(args.tabpfn_device)
-    except Exception as exc:
-        print(f"[ERROR] Invalid --tabpfn-device: {exc}")
-        return 1
-    torch_cuda_info = get_torch_cuda_runtime_info()
-    wants_cuda = False
-    if isinstance(resolved_tabpfn_device, list):
-        wants_cuda = any(str(d).lower().startswith("cuda") for d in resolved_tabpfn_device)
-    else:
-        wants_cuda = str(resolved_tabpfn_device).lower().startswith("cuda")
-    if args.model_type == "tabpfn" and wants_cuda and not bool(torch_cuda_info.get("cuda_available", False)):
-        print("[ERROR] CUDA device requested for TabPFN but torch.cuda.is_available() is False.")
-        print(
-            "Check whether your environment has GPU-enabled PyTorch installed and visible NVIDIA drivers."
-        )
-        return 1
-    tabpfn_reg_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_reg_model_path, task="reg")
-    tabpfn_clf_model_path_resolved = resolve_tabpfn_model_path(args.tabpfn_clf_model_path, task="clf")
-    if args.model_type == "tabpfn":
-        if not tabpfn_reg_model_path_resolved:
-            print(
-                "[ERROR] model-type=tabpfn but regressor local weights not found. "
-                "Set --tabpfn-reg-model-path to a .ckpt file or directory containing one."
-            )
-            return 1
-        if not tabpfn_clf_model_path_resolved:
-            print(
-                "[ERROR] model-type=tabpfn but classifier local weights not found. "
-                "Set --tabpfn-clf-model-path to a .ckpt file or directory containing one."
-            )
-            return 1
 
     try:
         train_df = load_csv(train_path)
@@ -1941,13 +1597,6 @@ def main() -> int:
             n_estimators=args.n_estimators,
             prefix="Correction regressor (validation)",
             model_type=args.model_type,
-            tabpfn_model_path=tabpfn_reg_model_path_resolved,
-            tabpfn_device=resolved_tabpfn_device,
-            tabpfn_n_estimators=args.tabpfn_n_estimators,
-            tabpfn_fit_mode=args.tabpfn_fit_mode,
-            tabpfn_inference_precision=args.tabpfn_inference_precision,
-            tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-            tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
         )
         x_val_corr_t = corr_pre_val.transform(x_val)
         corr_pred_val = corr_model_val.predict(x_val_corr_t)
@@ -1980,13 +1629,6 @@ def main() -> int:
                     n_estimators=args.n_estimators,
                     prefix=f"Correction gate classifier (validation, q={q:.2f})",
                     model_type=args.model_type,
-                    tabpfn_model_path=tabpfn_clf_model_path_resolved,
-                    tabpfn_device=resolved_tabpfn_device,
-                    tabpfn_n_estimators=args.tabpfn_n_estimators,
-                    tabpfn_fit_mode=args.tabpfn_fit_mode,
-                    tabpfn_inference_precision=args.tabpfn_inference_precision,
-                    tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-                    tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
                 )
                 x_val_gate_t = gate_pre_cand.transform(x_val)
                 gate_pred_val = gate_model_cand.predict(x_val_gate_t)
@@ -2079,19 +1721,10 @@ def main() -> int:
                 n_estimators=args.n_estimators,
                 prefix=f"Correction regressor (OOF fold {fold_idx}/{args.oof_folds})",
                 model_type=args.model_type,
-                tabpfn_model_path=tabpfn_reg_model_path_resolved,
-                tabpfn_device=resolved_tabpfn_device,
-                tabpfn_n_estimators=args.tabpfn_n_estimators,
-                tabpfn_fit_mode=args.tabpfn_fit_mode,
-                tabpfn_inference_precision=args.tabpfn_inference_precision,
-                tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-                tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
             )
             x_va_corr_t = corr_pre_fold.transform(x_va_fold)
             corr_pred_oof[va_idx] = corr_model_fold.predict(x_va_corr_t)
             del corr_pre_fold, corr_model_fold, x_va_corr_t
-            if args.model_type == "tabpfn":
-                release_runtime_memory()
 
         if not np.isfinite(corr_pred_oof).all():
             print("[ERROR] OOF correction prediction contains NaN/Inf.")
@@ -2142,13 +1775,6 @@ def main() -> int:
                         n_estimators=args.n_estimators,
                         prefix=f"Correction gate classifier (OOF fold {fold_idx}/{args.oof_folds}, q={q:.2f})",
                         model_type=args.model_type,
-                        tabpfn_model_path=tabpfn_clf_model_path_resolved,
-                        tabpfn_device=resolved_tabpfn_device,
-                        tabpfn_n_estimators=args.tabpfn_n_estimators,
-                        tabpfn_fit_mode=args.tabpfn_fit_mode,
-                        tabpfn_inference_precision=args.tabpfn_inference_precision,
-                        tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-                        tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
                     )
                     x_va_gate_t = gate_pre_fold.transform(x_va_fold)
                     gate_pred_fold = gate_model_fold.predict(x_va_gate_t).astype(int)
@@ -2158,8 +1784,6 @@ def main() -> int:
                     else:
                         gate_prob_oof[va_idx] = gate_pred_fold.astype(float)
                     del gate_pre_fold, gate_model_fold, x_va_gate_t
-                    if args.model_type == "tabpfn":
-                        release_runtime_memory()
 
             if not np.isfinite(gate_prob_oof).all():
                 print("[ERROR] OOF gate probability contains NaN/Inf.")
@@ -2304,13 +1928,6 @@ def main() -> int:
         n_estimators=args.n_estimators,
         prefix="Correction regressor (final)",
         model_type=args.model_type,
-        tabpfn_model_path=tabpfn_reg_model_path_resolved,
-        tabpfn_device=resolved_tabpfn_device,
-        tabpfn_n_estimators=args.tabpfn_n_estimators,
-        tabpfn_fit_mode=args.tabpfn_fit_mode,
-        tabpfn_inference_precision=args.tabpfn_inference_precision,
-        tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-        tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
     )
     gate_thr_full = float(np.quantile(np.abs(y_corr_full), selected_gate_quantile))
     y_gate_full = (np.abs(y_corr_full) >= gate_thr_full).astype(int)
@@ -2328,13 +1945,6 @@ def main() -> int:
             n_estimators=args.n_estimators,
             prefix="Correction gate classifier (final)",
             model_type=args.model_type,
-            tabpfn_model_path=tabpfn_clf_model_path_resolved,
-            tabpfn_device=resolved_tabpfn_device,
-            tabpfn_n_estimators=args.tabpfn_n_estimators,
-            tabpfn_fit_mode=args.tabpfn_fit_mode,
-            tabpfn_inference_precision=args.tabpfn_inference_precision,
-            tabpfn_preprocessing_jobs=args.tabpfn_preprocessing_jobs,
-            tabpfn_ignore_pretraining_limits=args.tabpfn_ignore_pretraining_limits,
         )
 
     x_test_corr_t = corr_pre_final.transform(X_test)
@@ -2396,27 +2006,7 @@ def main() -> int:
     print(f"Baseline column: {baseline_col}")
     print(f"Generated column: {generated_col}")
     print(f"Model type: {args.model_type}")
-    if args.model_type == "tabpfn":
-        print(f"TabPFN regressor weights: {tabpfn_reg_model_path_resolved}")
-        print(f"TabPFN classifier weights: {tabpfn_clf_model_path_resolved}")
-        print(f"TabPFN device (requested/resolved): {args.tabpfn_device}/{resolved_tabpfn_device}")
-        print(
-            "TabPFN params (n_estimators/fit_mode/precision/preprocess_jobs/ignore_limits): "
-            f"{args.tabpfn_n_estimators}/{args.tabpfn_fit_mode}/"
-            f"{args.tabpfn_inference_precision}/{args.tabpfn_preprocessing_jobs}/"
-            f"{args.tabpfn_ignore_pretraining_limits}"
-        )
-        print("TabPFN telemetry: disabled")
-        print(
-            "Torch CUDA runtime: "
-            f"import_ok={torch_cuda_info.get('torch_import_ok')}, "
-            f"torch={torch_cuda_info.get('torch_version')}, "
-            f"built_with_cuda={torch_cuda_info.get('cuda_compiled_version')}, "
-            f"cuda_available={torch_cuda_info.get('cuda_available')}, "
-            f"cuda_device_count={torch_cuda_info.get('cuda_device_count')}"
-        )
-        if torch_cuda_info.get("cuda_devices"):
-            print(f"CUDA devices: {torch_cuda_info.get('cuda_devices')}")
+    print(f"N estimators: {args.n_estimators}")
     print(f"Feature semantics mode: {llm_mode}")
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
     print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
