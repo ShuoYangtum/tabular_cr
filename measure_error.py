@@ -7,6 +7,8 @@ Features:
 - Robust numeric cleaning: extracts numeric part from messy strings.
 - Ignores rows with missing/invalid values in target or generated.
 - Prints multiple metrics (MAE, RMSE, MAPE, sMAPE, R2, etc.).
+- Optionally reports a fair central-band comparison that drops the same worst
+  rows for both generated and baseline (default: worst 5% by max error).
 
 Usage:
     # Option 1: set defaults at script top, then run:
@@ -24,7 +26,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -38,6 +40,7 @@ DEFAULT_FILE_PATH = "generated.csv"
 DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_GENERATED_COL = "generated" # esg_firma_wasser_berechnet
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
+DEFAULT_TRIM_WORST_FRACTION = 0.05
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
@@ -87,7 +90,7 @@ def extract_numeric(value) -> float:
 def load_table(file_path: Path) -> pd.DataFrame:
     suffix = file_path.suffix.lower()
     if suffix == ".csv":
-        return pd.read_csv(file_path)
+        return pd.read_csv(file_path, low_memory=False)
     if suffix in {".xlsx", ".xls"}:
         return pd.read_excel(file_path)
     raise ValueError(f"Unsupported file type: {suffix}. Use .csv/.xlsx/.xls")
@@ -245,78 +248,70 @@ def prepare_joint_data(
     )
 
 
-def fmt(v: float) -> str:
-    if isinstance(v, float) and np.isnan(v):
-        return "NaN"
-    return f"{v:.6f}"
+def fair_outlier_trim_mask(
+    y_true: np.ndarray,
+    y_gen: np.ndarray,
+    y_base: np.ndarray,
+    trim_worst_fraction: float,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """
+    Drop the worst rows for BOTH models using the same mask.
+
+  Score per row = max(|generated-target|, |baseline-target|), so a row is
+    excluded when either method has a very large error (likely bad/outlier case).
+    """
+    n = len(y_true)
+    keep_all = np.ones(n, dtype=bool)
+    info: Dict[str, float] = {
+        "trim_worst_fraction": float(trim_worst_fraction),
+        "trimmed_rows": 0.0,
+        "kept_rows": float(n),
+        "trim_score_threshold": float("nan"),
+    }
+    if trim_worst_fraction <= 0 or n == 0:
+        return keep_all, info
+
+    if not (0.0 < trim_worst_fraction < 0.5):
+        raise ValueError("--trim-worst-fraction must be in (0, 0.5).")
+
+    err_gen = np.abs(y_gen - y_true)
+    err_base = np.abs(y_base - y_true)
+    score = np.maximum(err_gen, err_base)
+    k_drop = int(math.ceil(n * trim_worst_fraction))
+    if k_drop <= 0:
+        return keep_all, info
+    if k_drop >= n:
+        return np.zeros(n, dtype=bool), {
+            **info,
+            "trimmed_rows": float(n),
+            "kept_rows": 0.0,
+            "trim_score_threshold": float(np.max(score)),
+        }
+
+    order = np.argsort(score, kind="mergesort")
+    keep_idx = order[: n - k_drop]
+    keep = np.zeros(n, dtype=bool)
+    keep[keep_idx] = True
+    worst_kept_score = float(np.max(score[keep_idx]))
+    worst_dropped_score = float(np.min(score[~keep])) if k_drop > 0 else float("nan")
+    info.update(
+        {
+            "trimmed_rows": float(k_drop),
+            "kept_rows": float(keep.sum()),
+            "trim_score_threshold": worst_kept_score,
+            "min_dropped_score": worst_dropped_score,
+            "max_dropped_score": float(np.max(score[~keep])),
+        }
+    )
+    return keep, info
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Evaluate errors between columns target (true) and generated (pred)."
-    )
-    parser.add_argument(
-        "--file",
-        default=DEFAULT_FILE_PATH,
-        help="Input table file path (.csv/.xlsx/.xls). If omitted, use DEFAULT_FILE_PATH in script.",
-    )
-    parser.add_argument(
-        "--target-col",
-        default=DEFAULT_TARGET_COL,
-        help=f"Column name for true values (default: {DEFAULT_TARGET_COL})",
-    )
-    parser.add_argument(
-        "--generated-col",
-        default=DEFAULT_GENERATED_COL,
-        help=f"Column name for predicted values (default: {DEFAULT_GENERATED_COL})",
-    )
-    parser.add_argument(
-        "--baseline-col",
-        default=DEFAULT_BASELINE_COL,
-        help=f"Column name for baseline values (default: {DEFAULT_BASELINE_COL})",
-    )
-    args = parser.parse_args()
-
-    if not args.file:
-        print(
-            "[ERROR] No input file provided. Set DEFAULT_FILE_PATH at top of script "
-            "or pass --file."
-        )
-        return 1
-
-    file_path = Path(args.file)
-    if not file_path.exists():
-        print(f"[ERROR] File not found: {file_path}")
-        return 1
-
-    try:
-        df = load_table(file_path)
-        y_true, y_pred_gen, y_pred_base, info = prepare_joint_data(
-            df, args.target_col, args.generated_col, args.baseline_col
-        )
-        metrics_gen = compute_metrics(y_true, y_pred_gen)
-        metrics_base = compute_metrics(y_true, y_pred_base)
-    except Exception as exc:
-        print(f"[ERROR] {exc}")
-        return 1
-
-    print("=== Data Cleaning Summary ===")
-    print(f"File: {file_path}")
-    print(f"Total rows: {info['raw_rows']}")
-    print(f"Used rows (shared by generated & baseline): {info['used_rows']}")
-    print(f"Dropped rows: {info['dropped_rows']}")
-    print(
-        "Rows with invalid values (target/generated/baseline): "
-        f"{info['invalid_target_rows']}/"
-        f"{info['invalid_generated_rows']}/"
-        f"{info['invalid_baseline_rows']}"
-    )
-    print(
-        "Rows filtered by zero value (target/baseline): "
-        f"{info['zero_target_rows']}/{info['zero_baseline_rows']}"
-    )
-    print()
-
+def format_metrics_table(
+    metrics_gen: dict,
+    metrics_base: dict,
+    generated_col: str,
+    baseline_col: str,
+) -> pd.DataFrame:
     metric_order = [
         "count_used",
         "mae",
@@ -353,7 +348,6 @@ def main() -> int:
         "nmae_by_target_median": "nMAE/med(|y|)",
         "r2": "R2",
     }
-
     rows = []
     for key in metric_order:
         v_gen = metrics_gen[key]
@@ -367,14 +361,139 @@ def main() -> int:
         rows.append(
             {
                 "metric": metric_name_map[key],
-                f"{args.generated_col} (generated)": gen_text,
-                f"{args.baseline_col} (baseline)": base_text,
+                f"{generated_col} (generated)": gen_text,
+                f"{baseline_col} (baseline)": base_text,
             }
         )
+    return pd.DataFrame(rows)
 
-    table_df = pd.DataFrame(rows)
-    print("=== Error Metrics Comparison (target=true) ===")
+
+def fmt(v: float) -> str:
+    if isinstance(v, float) and np.isnan(v):
+        return "NaN"
+    return f"{v:.6f}"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Evaluate errors between columns target (true) and generated (pred)."
+    )
+    parser.add_argument(
+        "--file",
+        default=DEFAULT_FILE_PATH,
+        help="Input table file path (.csv/.xlsx/.xls). If omitted, use DEFAULT_FILE_PATH in script.",
+    )
+    parser.add_argument(
+        "--target-col",
+        default=DEFAULT_TARGET_COL,
+        help=f"Column name for true values (default: {DEFAULT_TARGET_COL})",
+    )
+    parser.add_argument(
+        "--generated-col",
+        default=DEFAULT_GENERATED_COL,
+        help=f"Column name for predicted values (default: {DEFAULT_GENERATED_COL})",
+    )
+    parser.add_argument(
+        "--baseline-col",
+        default=DEFAULT_BASELINE_COL,
+        help=f"Column name for baseline values (default: {DEFAULT_BASELINE_COL})",
+    )
+    parser.add_argument(
+        "--trim-worst-fraction",
+        type=float,
+        default=DEFAULT_TRIM_WORST_FRACTION,
+        help=(
+            "Additionally report metrics on the central (1-f) share of rows, "
+            "dropping the worst f fraction by max(|generated-target|, |baseline-target|). "
+            f"Set 0 to disable (default: {DEFAULT_TRIM_WORST_FRACTION})."
+        ),
+    )
+    args = parser.parse_args()
+
+    if not args.file:
+        print(
+            "[ERROR] No input file provided. Set DEFAULT_FILE_PATH at top of script "
+            "or pass --file."
+        )
+        return 1
+
+    file_path = Path(args.file)
+    if not file_path.exists():
+        print(f"[ERROR] File not found: {file_path}")
+        return 1
+    if not (0.0 <= args.trim_worst_fraction < 0.5):
+        print("[ERROR] --trim-worst-fraction must be in [0, 0.5).")
+        return 1
+
+    try:
+        df = load_table(file_path)
+        y_true, y_pred_gen, y_pred_base, info = prepare_joint_data(
+            df, args.target_col, args.generated_col, args.baseline_col
+        )
+        metrics_gen = compute_metrics(y_true, y_pred_gen)
+        metrics_base = compute_metrics(y_true, y_pred_base)
+    except Exception as exc:
+        print(f"[ERROR] {exc}")
+        return 1
+
+    print("=== Data Cleaning Summary ===")
+    print(f"File: {file_path}")
+    print(f"Total rows: {info['raw_rows']}")
+    print(f"Used rows (shared by generated & baseline): {info['used_rows']}")
+    print(f"Dropped rows: {info['dropped_rows']}")
+    print(
+        "Rows with invalid values (target/generated/baseline): "
+        f"{info['invalid_target_rows']}/"
+        f"{info['invalid_generated_rows']}/"
+        f"{info['invalid_baseline_rows']}"
+    )
+    print(
+        "Rows filtered by zero value (target/baseline): "
+        f"{info['zero_target_rows']}/{info['zero_baseline_rows']}"
+    )
+    print()
+
+    table_df = format_metrics_table(
+        metrics_gen, metrics_base, args.generated_col, args.baseline_col
+    )
+    print("=== Error Metrics Comparison (target=true, all valid rows) ===")
     print(table_df.to_string(index=False))
+
+    if args.trim_worst_fraction > 0:
+        keep_mask, trim_info = fair_outlier_trim_mask(
+            y_true, y_pred_gen, y_pred_base, args.trim_worst_fraction
+        )
+        if int(trim_info["kept_rows"]) == 0:
+            print("\n[WARN] Fair trim removed all rows; skipped trimmed metrics.")
+            return 0
+
+        y_true_t = y_true[keep_mask]
+        y_gen_t = y_pred_gen[keep_mask]
+        y_base_t = y_pred_base[keep_mask]
+        metrics_gen_t = compute_metrics(y_true_t, y_gen_t)
+        metrics_base_t = compute_metrics(y_true_t, y_base_t)
+        table_trim_df = format_metrics_table(
+            metrics_gen_t, metrics_base_t, args.generated_col, args.baseline_col
+        )
+
+        kept_pct = 100.0 * (1.0 - args.trim_worst_fraction)
+        print()
+        print(
+            f"=== Fair Trimmed Comparison (central ~{kept_pct:.0f}% rows) ==="
+        )
+        print(
+            "Trim rule: drop the worst "
+            f"{args.trim_worst_fraction:.0%} rows by "
+            "max(|generated-target|, |baseline-target|); "
+            "same rows removed for both methods."
+        )
+        print(
+            f"Rows kept/trimmed: {int(trim_info['kept_rows'])}/"
+            f"{int(trim_info['trimmed_rows'])} "
+            f"(score threshold kept<={trim_info['trim_score_threshold']:.6f}, "
+            f"dropped>={trim_info.get('min_dropped_score', float('nan')):.6f})"
+        )
+        print(table_trim_df.to_string(index=False))
 
     return 0
 

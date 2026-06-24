@@ -83,7 +83,7 @@ DEFAULT_TUNE_OBJECTIVE = "hybrid"
 DEFAULT_ENABLE_SEGMENTED_ALPHA = True
 DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING = True
 DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX = 15.0
-DEFAULT_MIN_VALIDATION_REL_GAIN = 0.05
+DEFAULT_MIN_VALIDATION_REL_GAIN = 0.02
 DEFAULT_MAX_LOG_CORRECTION = 4.0
 DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP = True
 DEFAULT_HIGH_BASELINE_QUANTILE = 0.90
@@ -2151,7 +2151,10 @@ def main() -> int:
     calibration_used = False
     calibration_rel_gain = np.nan
     calibrator = None
-    if args.enable_posthoc_calibration:
+    correction_active = (not fallback_to_baseline) and (
+        use_segment_alpha or best_alpha > BASELINE_EPS
+    )
+    if args.enable_posthoc_calibration and correction_active:
         calibrator, val_pred_cal = fit_posthoc_calibrator(
             y_true=y_tar_val,
             y_pred=val_pred_selected,
@@ -2171,6 +2174,11 @@ def main() -> int:
             val_rmse = float(cal_metrics["rmse"])
             val_r2 = float(cal_metrics["r2"])
             val_trimmed_rmse90 = float(cal_metrics["trimmed_rmse90"])
+    elif args.enable_posthoc_calibration and not correction_active:
+        print(
+            "[INFO] Post-hoc calibration skipped because correction is inactive "
+            "(fallback to baseline or alpha=0)."
+        )
 
     # ----- Final full-train models -----
     y_corr_full = signed_log1p(y_train_target) - signed_log1p(baseline_train)
