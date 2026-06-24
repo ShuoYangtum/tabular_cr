@@ -1,0 +1,375 @@
+{
+  "train_file": "train_clean.csv",
+  "test_file": "test_clean.csv",
+  "rows_total": {
+    "train": 8206,
+    "test": 2759
+  },
+  "rows_valid_positive": {
+    "train": 7814,
+    "test": 2609
+  },
+  "feature_count_excl_target_baseline": 556,
+  "column_overlap": {
+    "train_only_cols": 0,
+    "test_only_cols": 0,
+    "shared_cols": 558
+  },
+  "label_quantiles": {
+    "train_target": {
+      "q00": 0.01,
+      "q01": 1.0,
+      "q05": 6.065000000000003,
+      "q10": 15.0,
+      "q25": 60.0,
+      "q50": 190.0,
+      "q75": 1201.0,
+      "q90": 37761.759,
+      "q95": 506834.99999999965,
+      "q99": 15226312.916399937,
+      "q100": 456410890.0,
+      "mean": 1337460.5714051703,
+      "std": 17153020.11878017,
+      "count": 7814.0
+    },
+    "test_target": {
+      "q00": 0.03,
+      "q01": 1.0,
+      "q05": 5.0,
+      "q10": 15.0,
+      "q25": 61.6,
+      "q50": 215.6,
+      "q75": 1700.0,
+      "q90": 66799.00000000013,
+      "q95": 508799.99999999884,
+      "q99": 60384000.000000015,
+      "q100": 599700000.0,
+      "mean": 3115918.3364200843,
+      "std": 31088525.17431991,
+      "count": 2609.0
+    },
+    "train_baseline": {
+      "q00": 7.0,
+      "q01": 7.0,
+      "q05": 28.0,
+      "q10": 63.0,
+      "q25": 210.0,
+      "q50": 1300.0,
+      "q75": 6500.0,
+      "q90": 55039.59999999999,
+      "q95": 346619.99999999715,
+      "q99": 8751867.999999981,
+      "q100": 135161000.0,
+      "mean": 376108.5612490402,
+      "std": 4064417.735730147,
+      "count": 7814.0
+    },
+    "test_baseline": {
+      "q00": 7.0,
+      "q01": 7.0,
+      "q05": 21.0,
+      "q10": 63.0,
+      "q25": 210.0,
+      "q50": 1400.0,
+      "q75": 7500.0,
+      "q90": 68656.00000000001,
+      "q95": 321799.9999999997,
+      "q99": 6379600.000000009,
+      "q100": 48291600.0,
+      "mean": 295752.1848409352,
+      "std": 2592767.4895479246,
+      "count": 2609.0
+    },
+    "train_ratio_target_over_baseline": {
+      "q00": 9.465215333648841e-07,
+      "q01": 0.0016728571428571428,
+      "q05": 0.008775084745762713,
+      "q10": 0.017796444444444448,
+      "q25": 0.044,
+      "q50": 0.2857142857142857,
+      "q75": 0.9956709956709957,
+      "q90": 3.2309523809523766,
+      "q95": 9.932529443946153,
+      "q99": 139.2195168970722,
+      "q100": 123124.15934065935,
+      "mean": 40.346708749255306,
+      "std": 1972.792786914621,
+      "count": 7814.0
+    },
+    "test_ratio_target_over_baseline": {
+      "q00": 9.15233249885596e-06,
+      "q01": 0.0013515789725552128,
+      "q05": 0.008333333333333333,
+      "q10": 0.016666666666666666,
+      "q25": 0.046046511627906975,
+      "q50": 0.3562049619324885,
+      "q75": 1.0,
+      "q90": 4.721787755102047,
+      "q95": 15.15558346982541,
+      "q99": 120.83146280000096,
+      "q100": 863095.2380952381,
+      "mean": 341.58017294713267,
+      "std": 16894.91491091488,
+      "count": 2609.0
+    },
+    "train_log_correction": {
+      "q00": -12.07871737940666,
+      "q01": -5.983592277068937,
+      "q05": -4.638983152960746,
+      "q10": -3.9801949844895517,
+      "q25": -3.1070031237751126,
+      "q50": -1.2223437171525648,
+      "q75": -0.004329011089585499,
+      "q90": 1.167627700708909,
+      "q95": 2.2829953314171196,
+      "q99": 4.898514566896066,
+      "q100": 11.715469129622107,
+      "mean": -1.3458555180164529,
+      "std": 2.216201988717441,
+      "count": 7814.0
+    }
+  },
+  "label_shift_psi_train_edges": {
+    "target": 0.005202426305744924,
+    "baseline": 0.005547771038510943,
+    "ratio": 0.012434568153535906
+  },
+  "baseline_error_on_valid_rows": {
+    "train_mae": 1384355.0261325825,
+    "test_mae": 3025381.6960789575,
+    "train_median_ae": 1003.0,
+    "test_median_ae": 1197.0
+  },
+  "domain_classifier": {
+    "available": 1.0,
+    "domain_auc": 0.9608756559195143,
+    "weight_mean": 0.9999999999999998,
+    "weight_p50": 0.9902603184030019,
+    "weight_p90": 1.3945016579081266,
+    "weight_p99": 1.986307238098291,
+    "weight_max": 7.706178222132508,
+    "weight_gt2_frac": 0.009748964172556666
+  },
+  "top_drift_features": [
+    {
+      "feature": "esg_firma_kapitel-handelsregister__amtsgericht__bezeichnung",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05905835217947563
+    },
+    {
+      "feature": "esg_firma_kapitel-handelsregister__amtsgericht__ort",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05893649012731867
+    },
+    {
+      "feature": "esg_firma_steuerungs-daten__crefonummer-mutter-konzern",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05516570103099973
+    },
+    {
+      "feature": "esg_firma_hauptbranche_abteilung_name_english",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05494450307623281
+    },
+    {
+      "feature": "esg_firma_hauptbranche_abteilung_name_german",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05409303670781826
+    },
+    {
+      "feature": "mitarbeiter_konzern_anzahl-mitarbeiter-gesamt__wert_intercept",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05272441853161839
+    },
+    {
+      "feature": "mitarbeiter_konzern_avg_mitarbeiter",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.05272441853161837
+    },
+    {
+      "feature": "esg_firma_kapitel-standorte__juristischer-sitz__datum-von__:tag",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.0525835859280292
+    },
+    {
+      "feature": "mitarbeiter_konzern_anzahl-mitarbeiter-gesamt__wert_steigung",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.052480694427304464
+    },
+    {
+      "feature": "umsatz_konzern_umsatz-gesamt__wert_intercept",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04950761812293214
+    },
+    {
+      "feature": "umsatz_konzern_avg_mitarbeiter",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04950761812293212
+    },
+    {
+      "feature": "umsatz_konzern_umsatz-gesamt__wert_steigung",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04920609898590806
+    },
+    {
+      "feature": "esg_firma_kapitel-handelsregister__register-aufnahme",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04912056587101068
+    },
+    {
+      "feature": "esg_firma_kapitel-standorte__juristischer-sitz__datum-von__:jahr",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.044625781911360574
+    },
+    {
+      "feature": "branche_2",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04457202833489264
+    },
+    {
+      "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__kurzname-rechtsform",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.043932550701283164
+    },
+    {
+      "feature": "esg_firma_kapitel-wirtschaftliche-entwicklung__auftragslage",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04158927903689139
+    },
+    {
+      "feature": "esg_firma_kapitel-geschaefts-gegenstand__eingetragener-gegenstand",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.0411978982307432
+    },
+    {
+      "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__bezeichnung",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04094087928130451
+    },
+    {
+      "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__datum-gruendung__:jahr",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.040772661946893586
+    },
+    {
+      "feature": "esg_firma_kapitel-import-export__export-quote__wert",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04045680999510873
+    },
+    {
+      "feature": "esg_firma_governance__beteiligungsdauer__wert",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.04008797742296785
+    },
+    {
+      "feature": "esg_firma_esg-bewertung__input__abfallrecyclingquote-prozent",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.039592048781569404
+    },
+    {
+      "feature": "esg_firma_environmental__abfall__gesamt-anteil-recycelt",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.039592048781569404
+    },
+    {
+      "feature": "esg_firma_social__anteil-frauen__kontrollebene",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.03810951895893497
+    }
+  ],
+  "test_prediction_metrics": {
+    "rows_used": 2609,
+    "baseline": {
+      "mae": 3025381.6960789575,
+      "rmse": 30042668.805296022,
+      "r2": 0.066150736551161,
+      "median_ae": 1197.0,
+      "bias": -2820166.151579149,
+      "trimmed_mae90": 26756.29259684972
+    },
+    "generated": {
+      "mae": 3109844.8493472873,
+      "rmse": 30477747.339617044,
+      "r2": 0.03890683370729453,
+      "median_ae": 117.55508339722962,
+      "bias": -2233617.8196957707,
+      "trimmed_mae90": 14397.918369226592
+    },
+    "delta_generated_minus_baseline": {
+      "mae": 84463.1532683298,
+      "rmse": 435078.5343210213,
+      "r2": -0.027243902843866463,
+      "median_ae": -1079.4449166027703,
+      "bias": 586548.3318833783,
+      "trimmed_mae90": -12358.374227623126
+    }
+  },
+  "test_error_tail_baseline": [
+    {
+      "top_fraction": 0.01,
+      "top_rows": 27,
+      "mae_share": 0.8781593381273913,
+      "mean_abs_err_in_top": 256722429.37037036,
+      "mean_target_in_top": 265454063.33333334,
+      "mean_pred_in_top": 8731633.962962963
+    },
+    {
+      "top_fraction": 0.05,
+      "top_rows": 131,
+      "mae_share": 0.9921550422336559,
+      "mean_abs_err_in_top": 59780907.3351145,
+      "mean_target_in_top": 61601350.29847328,
+      "mean_pred_in_top": 5474071.72519084
+    },
+    {
+      "top_fraction": 0.1,
+      "top_rows": 261,
+      "mae_share": 0.997977096443466,
+      "mean_abs_err_in_top": 30181048.354597703,
+      "mean_target_in_top": 31095808.78570881,
+      "mean_pred_in_top": 2883827.379310345
+    },
+    {
+      "top_fraction": 0.2,
+      "top_rows": 522,
+      "mae_share": 0.999530336813987,
+      "mean_abs_err_in_top": 15114010.900038315,
+      "mean_target_in_top": 15568927.650689654,
+      "mean_pred_in_top": 1468247.7969348659
+    }
+  ],
+  "test_error_tail_generated": [
+    {
+      "top_fraction": 0.01,
+      "top_rows": 27,
+      "mae_share": 0.8884727527861964,
+      "mean_abs_err_in_top": 266988866.23051816,
+      "mean_target_in_top": 263340175.1851852,
+      "mean_pred_in_top": 63597365.65956711
+    },
+    {
+      "top_fraction": 0.05,
+      "top_rows": 131,
+      "mae_share": 0.995893672442065,
+      "mean_abs_err_in_top": 61681436.438149616,
+      "mean_target_in_top": 61690143.739694655,
+      "mean_pred_in_top": 17284840.071435057
+    },
+    {
+      "top_fraction": 0.1,
+      "top_rows": 261,
+      "mae_share": 0.999273778821956,
+      "mean_abs_err_in_top": 31063957.68021568,
+      "mean_target_in_top": 31113960.38954023,
+      "mean_pred_in_top": 8780516.266909605
+    },
+    {
+      "top_fraction": 0.2,
+      "top_rows": 522,
+      "mae_share": 0.9998957219596679,
+      "mean_abs_err_in_top": 15541645.868163034,
+      "mean_target_in_top": 15570129.936570883,
+      "mean_pred_in_top": 4405564.299325915
+    }
+  ]
+}
