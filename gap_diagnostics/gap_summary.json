@@ -154,7 +154,7 @@
     {
       "feature": "esg_firma_kapitel-handelsregister__amtsgericht__bezeichnung",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.05905835217947563
+      "drift_value": 0.05905835217947564
     },
     {
       "feature": "esg_firma_kapitel-handelsregister__amtsgericht__ort",
@@ -164,17 +164,17 @@
     {
       "feature": "esg_firma_steuerungs-daten__crefonummer-mutter-konzern",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.05516570103099973
+      "drift_value": 0.055165701030999714
     },
     {
       "feature": "esg_firma_hauptbranche_abteilung_name_english",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.05494450307623281
+      "drift_value": 0.05494450307623282
     },
     {
       "feature": "esg_firma_hauptbranche_abteilung_name_german",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.05409303670781826
+      "drift_value": 0.05409303670781825
     },
     {
       "feature": "mitarbeiter_konzern_anzahl-mitarbeiter-gesamt__wert_intercept",
@@ -184,37 +184,37 @@
     {
       "feature": "mitarbeiter_konzern_avg_mitarbeiter",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.05272441853161837
+      "drift_value": 0.052724418531618376
     },
     {
       "feature": "esg_firma_kapitel-standorte__juristischer-sitz__datum-von__:tag",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.0525835859280292
+      "drift_value": 0.052583585928029204
     },
     {
       "feature": "mitarbeiter_konzern_anzahl-mitarbeiter-gesamt__wert_steigung",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.052480694427304464
-    },
-    {
-      "feature": "umsatz_konzern_umsatz-gesamt__wert_intercept",
-      "drift_kind": "tv_categorical",
-      "drift_value": 0.04950761812293214
+      "drift_value": 0.05248069442730444
     },
     {
       "feature": "umsatz_konzern_avg_mitarbeiter",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04950761812293212
+      "drift_value": 0.049507618122932126
+    },
+    {
+      "feature": "umsatz_konzern_umsatz-gesamt__wert_intercept",
+      "drift_kind": "tv_categorical",
+      "drift_value": 0.049507618122932126
     },
     {
       "feature": "umsatz_konzern_umsatz-gesamt__wert_steigung",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04920609898590806
+      "drift_value": 0.04920609898590803
     },
     {
       "feature": "esg_firma_kapitel-handelsregister__register-aufnahme",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04912056587101068
+      "drift_value": 0.049120565871010685
     },
     {
       "feature": "esg_firma_kapitel-standorte__juristischer-sitz__datum-von__:jahr",
@@ -224,7 +224,7 @@
     {
       "feature": "branche_2",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04457202833489264
+      "drift_value": 0.044572028334892634
     },
     {
       "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__kurzname-rechtsform",
@@ -239,7 +239,7 @@
     {
       "feature": "esg_firma_kapitel-geschaefts-gegenstand__eingetragener-gegenstand",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.0411978982307432
+      "drift_value": 0.041197898230743206
     },
     {
       "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__bezeichnung",
@@ -249,32 +249,32 @@
     {
       "feature": "esg_firma_kapitel-rechtsform-und-gruendung__aktuelle-rechtsform__datum-gruendung__:jahr",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.040772661946893586
+      "drift_value": 0.04077266194689359
     },
     {
       "feature": "esg_firma_kapitel-import-export__export-quote__wert",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04045680999510873
+      "drift_value": 0.04045680999510875
     },
     {
       "feature": "esg_firma_governance__beteiligungsdauer__wert",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.04008797742296785
+      "drift_value": 0.04008797742296784
     },
     {
       "feature": "esg_firma_esg-bewertung__input__abfallrecyclingquote-prozent",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.039592048781569404
+      "drift_value": 0.0395920487815694
     },
     {
       "feature": "esg_firma_environmental__abfall__gesamt-anteil-recycelt",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.039592048781569404
+      "drift_value": 0.0395920487815694
     },
     {
       "feature": "esg_firma_social__anteil-frauen__kontrollebene",
       "drift_kind": "tv_categorical",
-      "drift_value": 0.03810951895893497
+      "drift_value": 0.038109518958934975
     }
   ],
   "test_prediction_metrics": {
@@ -288,20 +288,20 @@
       "trimmed_mae90": 26756.29259684972
     },
     "generated": {
-      "mae": 3109844.8493472873,
-      "rmse": 30477747.339617044,
-      "r2": 0.03890683370729453,
-      "median_ae": 117.55508339722962,
-      "bias": -2233617.8196957707,
-      "trimmed_mae90": 14397.918369226592
+      "mae": 3683800.749250943,
+      "rmse": 29380520.368135795,
+      "r2": 0.10686167137043046,
+      "median_ae": 5800.689910256409,
+      "bias": -1793080.811589533,
+      "trimmed_mae90": 608847.301628749
     },
     "delta_generated_minus_baseline": {
-      "mae": 84463.1532683298,
-      "rmse": 435078.5343210213,
-      "r2": -0.027243902843866463,
-      "median_ae": -1079.4449166027703,
-      "bias": 586548.3318833783,
-      "trimmed_mae90": -12358.374227623126
+      "mae": 658419.0531719853,
+      "rmse": -662148.4371602274,
+      "r2": 0.04071093481926946,
+      "median_ae": 4603.689910256409,
+      "bias": 1027085.3399896161,
+      "trimmed_mae90": 582091.0090318993
     }
   },
   "test_error_tail_baseline": [
@@ -342,34 +342,34 @@
     {
       "top_fraction": 0.01,
       "top_rows": 27,
-      "mae_share": 0.8884727527861964,
-      "mean_abs_err_in_top": 266988866.23051816,
-      "mean_target_in_top": 263340175.1851852,
-      "mean_pred_in_top": 63597365.65956711
+      "mae_share": 0.69699656784643,
+      "mean_abs_err_in_top": 248105896.79039112,
+      "mean_target_in_top": 265454063.33333334,
+      "mean_pred_in_top": 17348166.542942207
     },
     {
       "top_fraction": 0.05,
       "top_rows": 131,
-      "mae_share": 0.995893672442065,
-      "mean_abs_err_in_top": 61681436.438149616,
-      "mean_target_in_top": 61690143.739694655,
-      "mean_pred_in_top": 17284840.071435057
+      "mae_share": 0.8521764846492991,
+      "mean_abs_err_in_top": 62521366.4445124,
+      "mean_target_in_top": 60044327.65847328,
+      "mean_pred_in_top": 14327151.79028135
     },
     {
       "top_fraction": 0.1,
       "top_rows": 261,
-      "mae_share": 0.999273778821956,
-      "mean_abs_err_in_top": 31063957.68021568,
-      "mean_target_in_top": 31113960.38954023,
-      "mean_pred_in_top": 8780516.266909605
+      "mae_share": 0.9762161906210032,
+      "mean_abs_err_in_top": 35948080.85423526,
+      "mean_target_in_top": 30358653.80842912,
+      "mean_pred_in_top": 11847137.734032094
     },
     {
       "top_fraction": 0.2,
       "top_rows": 522,
-      "mae_share": 0.9998957219596679,
-      "mean_abs_err_in_top": 15541645.868163034,
-      "mean_target_in_top": 15570129.936570883,
-      "mean_pred_in_top": 4405564.299325915
+      "mae_share": 0.9950493966254645,
+      "mean_abs_err_in_top": 18320796.41144635,
+      "mean_target_in_top": 15553992.74321839,
+      "mean_pred_in_top": 6511606.9434723295
     }
   ]
 }
