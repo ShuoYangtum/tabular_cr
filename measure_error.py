@@ -453,6 +453,15 @@ def main() -> int:
     )
     print()
 
+    if np.allclose(y_pred_gen, y_pred_base, rtol=0.0, atol=1e-9, equal_nan=True):
+        print(
+            "[NOTE] generated and baseline predictions are identical on all evaluated rows.\n"
+            "       Training likely used alpha=0 and/or fallback to baseline (no correction applied).\n"
+            "       Re-run train_and_generate.py after tuning changes, or check Training Summary for\n"
+            "       'Best alpha' and 'Fallback to baseline correction'."
+        )
+        print()
+
     table_df = format_metrics_table(
         metrics_gen, metrics_base, args.generated_col, args.baseline_col
     )
