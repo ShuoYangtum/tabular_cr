@@ -58,36 +58,37 @@ DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
-DEFAULT_RATIO_COVERAGE = 0.90
+DEFAULT_RATIO_COVERAGE = 0.93
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
 DEFAULT_MODEL_TYPE = "hgbt"
-DEFAULT_ENABLE_POSTHOC_CALIBRATION = True
+DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
 DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
-DEFAULT_ALPHA_GRID = "0,0.4,0.6,0.7"
-DEFAULT_GATE_QUANTILE = 0.7
+DEFAULT_ALPHA_GRID = "0,0.5,1.0"
+DEFAULT_GATE_QUANTILE = 0.4
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 12
 DEFAULT_MIN_BIN_ROWS = 60
-DEFAULT_GATE_QUANTILE_CANDIDATES = "0.7,0.8,0.9"
+DEFAULT_GATE_QUANTILE_CANDIDATES = "0.4,0.5,0.6,0.7"
 DEFAULT_GATE_MIN_CORRECTION_RATE = 0.10
 DEFAULT_GATE_MAX_CORRECTION_RATE = 0.55
 DEFAULT_GATE_RATE_PENALTY_WEIGHT = 12.0
 DEFAULT_TUNE_OBJECTIVE = "mae"
-DEFAULT_ENABLE_SEGMENTED_ALPHA = True
+DEFAULT_ENABLE_SEGMENTED_ALPHA = False
 DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING = True
 DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX = 15.0
-DEFAULT_MIN_VALIDATION_REL_GAIN = 0.001
-DEFAULT_MAX_LOG_CORRECTION = 4.0
-DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP = True
+DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
+DEFAULT_MAX_MEDIAN_AE_RATIO = 0.0
+DEFAULT_MAX_LOG_CORRECTION = 0.0
+DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP = False
 DEFAULT_HIGH_BASELINE_QUANTILE = 0.90
-DEFAULT_HIGH_BASELINE_ALPHA_CAP = 0.2
+DEFAULT_HIGH_BASELINE_ALPHA_CAP = 0.0
 DEFAULT_OOF_FOLDS = 3
 DEFAULT_DISABLE_OOF_TUNING = False
 DEFAULT_ENABLE_AUTO_FEATURE_PRUNING = True
@@ -857,8 +858,35 @@ def objective_value(metrics: Dict[str, float], objective: str) -> float:
         return float(metrics["rmse"])
     if objective == "trimmed_rmse90":
         return float(metrics["trimmed_rmse90"])
-    # hybrid objective
+    if objective == "median_ae":
+        return float(metrics["median_ae"])
+    if objective == "typical_hybrid":
+        return float(0.35 * metrics["mae"] + 0.65 * metrics["median_ae"])
+    # legacy hybrid objective
     return float(0.8 * metrics["mae"] + 0.2 * metrics["trimmed_rmse90"])
+
+
+def passes_median_guard(
+    metrics: Dict[str, float],
+    baseline_metrics: Dict[str, float] | None,
+    max_median_ae_ratio: float,
+) -> bool:
+    if baseline_metrics is None or max_median_ae_ratio <= 0:
+        return True
+    base_med = float(baseline_metrics.get("median_ae", np.nan))
+    if not np.isfinite(base_med):
+        return True
+    return float(metrics["median_ae"]) <= base_med * max_median_ae_ratio
+
+
+def prefer_segmented_alpha(
+    metrics_global: Dict[str, float],
+    metrics_segment: Dict[str, float],
+    objective: str,
+) -> bool:
+    if objective_value(metrics_segment, objective) < objective_value(metrics_global, objective):
+        return True
+    return float(metrics_segment["median_ae"]) < float(metrics_global["median_ae"])
 
 
 def penalize_by_gate_rate(
@@ -1017,11 +1045,14 @@ def pick_best_alpha(
     high_baseline_threshold: float = float("nan"),
     high_baseline_alpha_cap: float = 0.0,
     enable_high_baseline_cap: bool = True,
+    baseline_metrics: Dict[str, float] | None = None,
+    max_median_ae_ratio: float = 0.0,
 ) -> Tuple[float, Dict[str, float]]:
     zero_base = is_zero_baseline_mode(base)
     best_alpha = alpha_candidates[0]
     best_score = float("inf")
     best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan, "median_ae": np.nan, "trimmed_rmse90": np.nan}
+    found = False
     for alpha in alpha_candidates:
         y_pred = apply_blended_prediction(
             base=base,
@@ -1037,11 +1068,17 @@ def pick_best_alpha(
             enable_high_baseline_cap=enable_high_baseline_cap,
         )
         metrics = evaluate_predictions(y_true, y_pred, sample_weight=sample_weight)
+        if not passes_median_guard(metrics, baseline_metrics, max_median_ae_ratio):
+            continue
         score = objective_value(metrics, objective)
         if score < best_score:
             best_score = score
             best_alpha = alpha
             best_metrics = metrics
+            found = True
+    if not found and baseline_metrics is not None:
+        best_alpha = 0.0
+        best_metrics = dict(baseline_metrics)
     return best_alpha, best_metrics
 
 
@@ -1061,6 +1098,8 @@ def fit_segmented_alpha(
     high_baseline_threshold: float = float("nan"),
     high_baseline_alpha_cap: float = 0.0,
     enable_high_baseline_cap: bool = True,
+    baseline_metrics: Dict[str, float] | None = None,
+    max_median_ae_ratio: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     zero_base = is_zero_baseline_mode(base)
     edges = make_adaptive_bins(base, n_bins)
@@ -1079,6 +1118,8 @@ def fit_segmented_alpha(
         high_baseline_threshold=high_baseline_threshold,
         high_baseline_alpha_cap=high_baseline_alpha_cap,
         enable_high_baseline_cap=enable_high_baseline_cap,
+        baseline_metrics=baseline_metrics,
+        max_median_ae_ratio=max_median_ae_ratio,
     )
 
     alpha_by_bin = np.full(len(edges) - 1, default_alpha, dtype=float)
@@ -1086,6 +1127,11 @@ def fit_segmented_alpha(
         mask = bin_idx == b
         if int(mask.sum()) < min_bin_rows:
             continue
+        bin_baseline_metrics = evaluate_predictions(
+            y_true[mask],
+            base[mask],
+            sample_weight=sample_weight[mask] if sample_weight is not None else None,
+        )
         best_a, _ = pick_best_alpha(
             y_true=y_true[mask],
             base=base[mask],
@@ -1100,6 +1146,8 @@ def fit_segmented_alpha(
             high_baseline_threshold=high_baseline_threshold,
             high_baseline_alpha_cap=high_baseline_alpha_cap,
             enable_high_baseline_cap=enable_high_baseline_cap,
+            baseline_metrics=bin_baseline_metrics,
+            max_median_ae_ratio=max_median_ae_ratio,
         )
         alpha_by_bin[b] = best_a
 
@@ -1408,7 +1456,7 @@ def main() -> int:
     parser.add_argument(
         "--tune-objective",
         default=DEFAULT_TUNE_OBJECTIVE,
-        choices=["mae", "rmse", "trimmed_rmse90", "hybrid"],
+        choices=["mae", "rmse", "trimmed_rmse90", "hybrid", "median_ae", "typical_hybrid"],
         help=f"Validation tuning objective (default: {DEFAULT_TUNE_OBJECTIVE}).",
     )
     parser.add_argument(
@@ -1418,6 +1466,15 @@ def main() -> int:
         help=(
             "Minimum relative objective improvement over baseline required to apply correction "
             f"(default: {DEFAULT_MIN_VALIDATION_REL_GAIN})."
+        ),
+    )
+    parser.add_argument(
+        "--max-median-ae-ratio",
+        type=float,
+        default=DEFAULT_MAX_MEDIAN_AE_RATIO,
+        help=(
+            "Reject alpha/calibration when validation MedianAE exceeds baseline by this ratio "
+            f"(default: {DEFAULT_MAX_MEDIAN_AE_RATIO}). Set <=0 to disable."
         ),
     )
     parser.add_argument(
@@ -1551,6 +1608,9 @@ def main() -> int:
         return 1
     if args.high_baseline_alpha_cap < 0:
         print("[ERROR] --high-baseline-alpha-cap must be >= 0.")
+        return 1
+    if args.max_median_ae_ratio < 0:
+        print("[ERROR] --max-median-ae-ratio must be >= 0.")
         return 1
     if args.calibration_min_rel_gain < 0:
         print("[ERROR] --calibration-min-rel-gain must be >= 0.")
@@ -1742,6 +1802,10 @@ def main() -> int:
         "high_baseline_alpha_cap": float(args.high_baseline_alpha_cap),
         "enable_high_baseline_cap": bool(args.enable_high_baseline_alpha_cap),
     }
+    tune_guard_kwargs = {
+        **blend_kwargs,
+        "max_median_ae_ratio": float(args.max_median_ae_ratio),
+    }
 
     if len(y_train_ratio) < 20:
         print("[ERROR] Too few valid training rows after cleaning target/baseline (<20).")
@@ -1888,7 +1952,8 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
                 sample_weight=w_val,
-                **blend_kwargs,
+                baseline_metrics=baseline_val_metrics,
+                **tune_guard_kwargs,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -1903,10 +1968,11 @@ def main() -> int:
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
                     sample_weight=w_val,
-                    **blend_kwargs,
+                    baseline_metrics=baseline_val_metrics,
+                    **tune_guard_kwargs,
                 )
-                use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
-                    metrics_global, args.tune_objective
+                use_segment = prefer_segmented_alpha(
+                    metrics_global, metrics_segment, args.tune_objective
                 )
             else:
                 alpha_edges_cand = np.array([-np.inf, np.inf], dtype=float)
@@ -2040,7 +2106,8 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
                 sample_weight=w_val,
-                **blend_kwargs,
+                baseline_metrics=baseline_val_metrics,
+                **tune_guard_kwargs,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -2055,10 +2122,11 @@ def main() -> int:
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
                     sample_weight=w_val,
-                    **blend_kwargs,
+                    baseline_metrics=baseline_val_metrics,
+                    **tune_guard_kwargs,
                 )
-                use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
-                    metrics_global, args.tune_objective
+                use_segment = prefer_segmented_alpha(
+                    metrics_global, metrics_segment, args.tune_objective
                 )
             else:
                 alpha_edges_cand = np.array([-np.inf, np.inf], dtype=float)
@@ -2146,6 +2214,30 @@ def main() -> int:
         zero_baseline_mode=zero_baseline_mode,
         **blend_kwargs,
     )
+    pre_val_metrics = evaluate_predictions(y_tar_val, val_pred_selected, sample_weight=w_val)
+    if (
+        (not fallback_to_baseline)
+        and (not passes_median_guard(pre_val_metrics, baseline_val_metrics, args.max_median_ae_ratio))
+    ):
+        print(
+            "[WARN] Validation MedianAE degraded vs baseline after alpha selection; "
+            "falling back to baseline correction."
+        )
+        fallback_to_baseline = True
+        best_alpha = 0.0
+        use_segment_alpha = False
+        val_alpha = 0.0
+        val_pred_selected = apply_blended_prediction(
+            base=base_val,
+            corr_pred=corr_pred_val,
+            gate_prob=selected_gate_prob_val,
+            alpha=0.0,
+            ratio_lower=ratio_lower_val,
+            ratio_upper=ratio_upper_val,
+            zero_baseline_mode=zero_baseline_mode,
+            **blend_kwargs,
+        )
+        pre_val_metrics = evaluate_predictions(y_tar_val, val_pred_selected, sample_weight=w_val)
 
     # Optional post-hoc calibration fitted only on validation predictions (leak-safe for test).
     calibration_used = False
@@ -2169,11 +2261,16 @@ def main() -> int:
             pre_metrics["rmse"] - cal_metrics["rmse"]
         ) / max(abs(pre_metrics["rmse"]), 1e-12)
         if calibration_rel_gain >= args.calibration_min_rel_gain:
-            calibration_used = True
-            val_mae = float(cal_metrics["mae"])
-            val_rmse = float(cal_metrics["rmse"])
-            val_r2 = float(cal_metrics["r2"])
-            val_trimmed_rmse90 = float(cal_metrics["trimmed_rmse90"])
+            if passes_median_guard(cal_metrics, pre_metrics, max(1.0, args.max_median_ae_ratio)):
+                calibration_used = True
+                val_mae = float(cal_metrics["mae"])
+                val_rmse = float(cal_metrics["rmse"])
+                val_r2 = float(cal_metrics["r2"])
+                val_trimmed_rmse90 = float(cal_metrics["trimmed_rmse90"])
+            else:
+                print(
+                    "[INFO] Post-hoc calibration skipped because it would worsen validation MedianAE."
+                )
     elif args.enable_posthoc_calibration and not correction_active:
         print(
             "[INFO] Post-hoc calibration skipped because correction is inactive "
@@ -2304,6 +2401,10 @@ def main() -> int:
         )
     print(f"Baseline alpha bins: {args.baseline_alpha_bins}, min bin rows: {args.min_bin_rows}")
     print(f"Tuning objective: {args.tune_objective}")
+    print(
+        "MedianAE guard ratio (validation): "
+        f"{args.max_median_ae_ratio if args.max_median_ae_ratio > 0 else 'disabled'}"
+    )
     print(f"Validation mode: {validation_mode_label}")
     print(f"Validation relative gain: {rel_gain:.6f}")
     print(f"Fallback to baseline correction: {'yes' if fallback_to_baseline else 'no'}")

@@ -7,8 +7,9 @@ Features:
 - Robust numeric cleaning: extracts numeric part from messy strings.
 - Ignores rows with missing/invalid values in target or generated.
 - Prints multiple metrics (MAE, RMSE, MAPE, sMAPE, R2, etc.).
-- Optionally reports a fair central-band comparison that drops the same worst
-  rows for both generated and baseline (default: worst 5% by max error).
+- By default reports a fair central-band comparison on ~95% of rows,
+  dropping the worst 5% for both generated and baseline (likely noise/outliers).
+- Use --show-full-metrics to also print metrics on all valid rows.
 
 Usage:
     # Option 1: set defaults at script top, then run:
@@ -17,6 +18,8 @@ Usage:
     # Option 2: pass args:
     python measure_error.py --file data.csv
     python measure_error.py --file data.xlsx --target-col target --generated-col generated
+    python measure_error.py --show-full-metrics
+    python measure_error.py --trim-worst-fraction 0
 """
 
 from __future__ import annotations
@@ -403,10 +406,15 @@ def main() -> int:
         type=float,
         default=DEFAULT_TRIM_WORST_FRACTION,
         help=(
-            "Additionally report metrics on the central (1-f) share of rows, "
-            "dropping the worst f fraction by max(|generated-target|, |baseline-target|). "
-            f"Set 0 to disable (default: {DEFAULT_TRIM_WORST_FRACTION})."
+            "Drop the worst f fraction of rows (by max error of generated/baseline) "
+            "before reporting primary metrics. Set 0 to evaluate all rows. "
+            f"(default: {DEFAULT_TRIM_WORST_FRACTION})"
         ),
+    )
+    parser.add_argument(
+        "--show-full-metrics",
+        action="store_true",
+        help="Also print metrics on all valid rows (in addition to trimmed primary report).",
     )
     args = parser.parse_args()
 
@@ -430,8 +438,6 @@ def main() -> int:
         y_true, y_pred_gen, y_pred_base, info = prepare_joint_data(
             df, args.target_col, args.generated_col, args.baseline_col
         )
-        metrics_gen = compute_metrics(y_true, y_pred_gen)
-        metrics_base = compute_metrics(y_true, y_pred_base)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return 1
@@ -462,39 +468,38 @@ def main() -> int:
         )
         print()
 
-    table_df = format_metrics_table(
-        metrics_gen, metrics_base, args.generated_col, args.baseline_col
-    )
-    print("=== Error Metrics Comparison (target=true, all valid rows) ===")
-    print(table_df.to_string(index=False))
+    y_true_eval = y_true
+    y_gen_eval = y_pred_gen
+    y_base_eval = y_pred_base
+    trim_info: Dict[str, float] | None = None
 
     if args.trim_worst_fraction > 0:
         keep_mask, trim_info = fair_outlier_trim_mask(
             y_true, y_pred_gen, y_pred_base, args.trim_worst_fraction
         )
         if int(trim_info["kept_rows"]) == 0:
-            print("\n[WARN] Fair trim removed all rows; skipped trimmed metrics.")
-            return 0
+            print("[WARN] Fair trim removed all rows; falling back to all valid rows.")
+        else:
+            y_true_eval = y_true[keep_mask]
+            y_gen_eval = y_pred_gen[keep_mask]
+            y_base_eval = y_pred_base[keep_mask]
 
-        y_true_t = y_true[keep_mask]
-        y_gen_t = y_pred_gen[keep_mask]
-        y_base_t = y_pred_base[keep_mask]
-        metrics_gen_t = compute_metrics(y_true_t, y_gen_t)
-        metrics_base_t = compute_metrics(y_true_t, y_base_t)
-        table_trim_df = format_metrics_table(
-            metrics_gen_t, metrics_base_t, args.generated_col, args.baseline_col
-        )
+    metrics_gen = compute_metrics(y_true_eval, y_gen_eval)
+    metrics_base = compute_metrics(y_true_eval, y_base_eval)
+    table_df = format_metrics_table(
+        metrics_gen, metrics_base, args.generated_col, args.baseline_col
+    )
 
+    if trim_info is not None and int(trim_info["kept_rows"]) > 0:
         kept_pct = 100.0 * (1.0 - args.trim_worst_fraction)
-        print()
         print(
-            f"=== Fair Trimmed Comparison (central ~{kept_pct:.0f}% rows) ==="
+            f"=== Primary Metrics (fair trim, central ~{kept_pct:.0f}% rows) ==="
         )
         print(
             "Trim rule: drop the worst "
             f"{args.trim_worst_fraction:.0%} rows by "
             "max(|generated-target|, |baseline-target|); "
-            "same rows removed for both methods."
+            "same rows removed for both methods (likely noisy tail)."
         )
         print(
             f"Rows kept/trimmed: {int(trim_info['kept_rows'])}/"
@@ -502,7 +507,20 @@ def main() -> int:
             f"(score threshold kept<={trim_info['trim_score_threshold']:.6f}, "
             f"dropped>={trim_info.get('min_dropped_score', float('nan')):.6f})"
         )
-        print(table_trim_df.to_string(index=False))
+    else:
+        print("=== Error Metrics Comparison (target=true, all valid rows) ===")
+    print(table_df.to_string(index=False))
+
+    if args.show_full_metrics and args.trim_worst_fraction > 0 and trim_info is not None:
+        if int(trim_info["kept_rows"]) > 0 and int(trim_info["kept_rows"]) < len(y_true):
+            metrics_gen_all = compute_metrics(y_true, y_pred_gen)
+            metrics_base_all = compute_metrics(y_true, y_pred_base)
+            table_all_df = format_metrics_table(
+                metrics_gen_all, metrics_base_all, args.generated_col, args.baseline_col
+            )
+            print()
+            print("=== Full Metrics (all valid rows, includes noisy tail) ===")
+            print(table_all_df.to_string(index=False))
 
     return 0
 
