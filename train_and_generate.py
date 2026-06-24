@@ -58,20 +58,20 @@ DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
 DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
 DEFAULT_GENERATED_COL = "generated"
 DEFAULT_N_ESTIMATORS = 300
-DEFAULT_RATIO_COVERAGE = 0.93
+DEFAULT_RATIO_COVERAGE = 0.88
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
 DEFAULT_LLM_SAMPLE_SIZE = 20
 DEFAULT_LLM_MAX_NEW_TOKENS = 220
 DEFAULT_LLM_TEMPERATURE = 0.0
 DEFAULT_FEATURE_SEMANTIC_CACHE = "feature_semantic_cache.json"
 DEFAULT_MODEL_TYPE = "hgbt"
-DEFAULT_ENABLE_POSTHOC_CALIBRATION = False
+DEFAULT_ENABLE_POSTHOC_CALIBRATION = True
 DEFAULT_CALIBRATION_METHOD = "segmented_bias"
 DEFAULT_CALIBRATION_MIN_REL_GAIN = 0.0
 DEFAULT_CALIBRATION_BINS = 10
 DEFAULT_CALIBRATION_MIN_BIN_ROWS = 60
-DEFAULT_ALPHA_GRID = "0,0.5,1.0"
-DEFAULT_GATE_QUANTILE = 0.4
+DEFAULT_ALPHA_GRID = "0,0.3,0.5,0.7"
+DEFAULT_GATE_QUANTILE = 0.7
 DEFAULT_MIN_FEATURE_NON_NULL_RATIO = 0.01
 DEFAULT_BASELINE_ALPHA_BINS = 12
 DEFAULT_MIN_BIN_ROWS = 60
@@ -79,11 +79,15 @@ DEFAULT_GATE_QUANTILE_CANDIDATES = "0.7,0.8,0.9"
 DEFAULT_GATE_MIN_CORRECTION_RATE = 0.10
 DEFAULT_GATE_MAX_CORRECTION_RATE = 0.55
 DEFAULT_GATE_RATE_PENALTY_WEIGHT = 12.0
-DEFAULT_TUNE_OBJECTIVE = "mae"
-DEFAULT_ENABLE_SEGMENTED_ALPHA = False
+DEFAULT_TUNE_OBJECTIVE = "hybrid"
+DEFAULT_ENABLE_SEGMENTED_ALPHA = True
 DEFAULT_ENABLE_TEST_DISTRIBUTION_WEIGHTING = True
-DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX = 8.0
-DEFAULT_MIN_VALIDATION_REL_GAIN = 0.002
+DEFAULT_TEST_DISTRIBUTION_WEIGHT_MAX = 15.0
+DEFAULT_MIN_VALIDATION_REL_GAIN = 0.05
+DEFAULT_MAX_LOG_CORRECTION = 4.0
+DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP = True
+DEFAULT_HIGH_BASELINE_QUANTILE = 0.90
+DEFAULT_HIGH_BASELINE_ALPHA_CAP = 0.0
 DEFAULT_OOF_FOLDS = 3
 DEFAULT_DISABLE_OOF_TUNING = False
 DEFAULT_ENABLE_AUTO_FEATURE_PRUNING = True
@@ -133,6 +137,93 @@ def apply_ratio_clip(
     ratio = np.clip(ratio, ratio_lower, ratio_upper)
     out[valid] = base[valid] * ratio
     return out
+
+
+def clip_log_correction(corr_pred: np.ndarray, max_log_correction: float) -> np.ndarray:
+    corr = np.asarray(corr_pred, dtype=float)
+    if max_log_correction <= 0:
+        return corr
+    return np.clip(corr, -max_log_correction, max_log_correction)
+
+
+def cap_alpha_for_high_baseline(
+    base: np.ndarray,
+    alpha: np.ndarray,
+    high_baseline_threshold: float,
+    high_baseline_alpha_cap: float,
+    enable_cap: bool,
+    zero_baseline_mode: bool,
+) -> np.ndarray:
+    alpha_arr = np.asarray(alpha, dtype=float).copy()
+    if (
+        (not enable_cap)
+        or zero_baseline_mode
+        or (not np.isfinite(high_baseline_threshold))
+    ):
+        return alpha_arr
+    high = np.isfinite(base) & (base >= high_baseline_threshold)
+    if np.any(high):
+        alpha_arr[high] = np.minimum(alpha_arr[high], high_baseline_alpha_cap)
+    return alpha_arr
+
+
+def apply_blended_prediction(
+    base: np.ndarray,
+    corr_pred: np.ndarray,
+    gate_prob: np.ndarray,
+    alpha: np.ndarray | float,
+    ratio_lower: float,
+    ratio_upper: float,
+    zero_baseline_mode: bool,
+    max_log_correction: float = 0.0,
+    high_baseline_threshold: float = float("nan"),
+    high_baseline_alpha_cap: float = 0.0,
+    enable_high_baseline_cap: bool = True,
+) -> np.ndarray:
+    base = np.asarray(base, dtype=float)
+    gate = np.asarray(gate_prob, dtype=float)
+    corr = clip_log_correction(corr_pred, max_log_correction)
+
+    if np.ndim(alpha) == 0 or (isinstance(alpha, np.ndarray) and alpha.size == 1):
+        scalar = float(alpha) if np.ndim(alpha) == 0 else float(alpha.flat[0])
+        alpha_arr = np.full(base.shape, scalar, dtype=float)
+    else:
+        alpha_arr = np.asarray(alpha, dtype=float)
+
+    alpha_arr = cap_alpha_for_high_baseline(
+        base=base,
+        alpha=alpha_arr,
+        high_baseline_threshold=high_baseline_threshold,
+        high_baseline_alpha_cap=high_baseline_alpha_cap,
+        enable_cap=enable_high_baseline_cap,
+        zero_baseline_mode=zero_baseline_mode,
+    )
+    slog = signed_log1p(base) + alpha_arr * gate * corr
+    pred = signed_expm1(slog)
+    return apply_ratio_clip(
+        pred, base, ratio_lower, ratio_upper, zero_baseline_mode=zero_baseline_mode
+    )
+
+
+def cap_segmented_alphas(
+    alpha_by_bin: np.ndarray,
+    edges: np.ndarray,
+    high_baseline_threshold: float,
+    high_baseline_alpha_cap: float,
+    enable_cap: bool,
+    zero_baseline_mode: bool,
+) -> np.ndarray:
+    capped = np.asarray(alpha_by_bin, dtype=float).copy()
+    if (
+        (not enable_cap)
+        or zero_baseline_mode
+        or (not np.isfinite(high_baseline_threshold))
+    ):
+        return capped
+    for b in range(len(capped)):
+        if float(edges[b]) >= high_baseline_threshold:
+            capped[b] = min(float(capped[b]), high_baseline_alpha_cap)
+    return capped
 
 
 def extract_numeric(value) -> float:
@@ -750,7 +841,13 @@ def evaluate_predictions(
         rmse = float(math.sqrt(mean_squared_error(y_true, y_pred)))
         r2 = float(r2_score(y_true, y_pred)) if len(y_true) >= 2 else np.nan
     trimmed_rmse90 = float(np.sqrt(trimmed_mean(err**2, 0.05)))
-    return {"mae": mae, "rmse": rmse, "r2": r2, "trimmed_rmse90": trimmed_rmse90}
+    return {
+        "mae": mae,
+        "rmse": rmse,
+        "r2": r2,
+        "median_ae": float(np.median(np.abs(err))),
+        "trimmed_rmse90": trimmed_rmse90,
+    }
 
 
 def objective_value(metrics: Dict[str, float], objective: str) -> float:
@@ -916,17 +1013,28 @@ def pick_best_alpha(
     ratio_upper: float,
     objective: str,
     sample_weight: np.ndarray | None = None,
+    max_log_correction: float = 0.0,
+    high_baseline_threshold: float = float("nan"),
+    high_baseline_alpha_cap: float = 0.0,
+    enable_high_baseline_cap: bool = True,
 ) -> Tuple[float, Dict[str, float]]:
-    base_slog = signed_log1p(base)
     zero_base = is_zero_baseline_mode(base)
     best_alpha = alpha_candidates[0]
     best_score = float("inf")
-    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan, "trimmed_rmse90": np.nan}
+    best_metrics = {"mae": np.nan, "rmse": np.nan, "r2": np.nan, "median_ae": np.nan, "trimmed_rmse90": np.nan}
     for alpha in alpha_candidates:
-        y_slog_pred = base_slog + alpha * gate_prob * corr_pred
-        y_pred = signed_expm1(y_slog_pred)
-        y_pred = apply_ratio_clip(
-            y_pred, base, ratio_lower, ratio_upper, zero_baseline_mode=zero_base
+        y_pred = apply_blended_prediction(
+            base=base,
+            corr_pred=corr_pred,
+            gate_prob=gate_prob,
+            alpha=alpha,
+            ratio_lower=ratio_lower,
+            ratio_upper=ratio_upper,
+            zero_baseline_mode=zero_base,
+            max_log_correction=max_log_correction,
+            high_baseline_threshold=high_baseline_threshold,
+            high_baseline_alpha_cap=high_baseline_alpha_cap,
+            enable_high_baseline_cap=enable_high_baseline_cap,
         )
         metrics = evaluate_predictions(y_true, y_pred, sample_weight=sample_weight)
         score = objective_value(metrics, objective)
@@ -949,7 +1057,12 @@ def fit_segmented_alpha(
     min_bin_rows: int,
     objective: str,
     sample_weight: np.ndarray | None = None,
+    max_log_correction: float = 0.0,
+    high_baseline_threshold: float = float("nan"),
+    high_baseline_alpha_cap: float = 0.0,
+    enable_high_baseline_cap: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    zero_base = is_zero_baseline_mode(base)
     edges = make_adaptive_bins(base, n_bins)
     bin_idx = assign_bins(base, edges)
     default_alpha, _ = pick_best_alpha(
@@ -962,6 +1075,10 @@ def fit_segmented_alpha(
         ratio_upper=ratio_upper,
         objective=objective,
         sample_weight=sample_weight,
+        max_log_correction=max_log_correction,
+        high_baseline_threshold=high_baseline_threshold,
+        high_baseline_alpha_cap=high_baseline_alpha_cap,
+        enable_high_baseline_cap=enable_high_baseline_cap,
     )
 
     alpha_by_bin = np.full(len(edges) - 1, default_alpha, dtype=float)
@@ -979,13 +1096,34 @@ def fit_segmented_alpha(
             ratio_upper=ratio_upper,
             objective=objective,
             sample_weight=sample_weight[mask] if sample_weight is not None else None,
+            max_log_correction=max_log_correction,
+            high_baseline_threshold=high_baseline_threshold,
+            high_baseline_alpha_cap=high_baseline_alpha_cap,
+            enable_high_baseline_cap=enable_high_baseline_cap,
         )
         alpha_by_bin[b] = best_a
 
-    pred_slog = signed_log1p(base) + alpha_by_bin[bin_idx] * gate_prob * corr_pred
-    pred = signed_expm1(pred_slog)
-    pred = apply_ratio_clip(
-        pred, base, ratio_lower, ratio_upper, zero_baseline_mode=is_zero_baseline_mode(base)
+    alpha_by_bin = cap_segmented_alphas(
+        alpha_by_bin=alpha_by_bin,
+        edges=edges,
+        high_baseline_threshold=high_baseline_threshold,
+        high_baseline_alpha_cap=high_baseline_alpha_cap,
+        enable_cap=enable_high_baseline_cap,
+        zero_baseline_mode=zero_base,
+    )
+    alpha_per_sample = alpha_by_bin[bin_idx]
+    pred = apply_blended_prediction(
+        base=base,
+        corr_pred=corr_pred,
+        gate_prob=gate_prob,
+        alpha=alpha_per_sample,
+        ratio_lower=ratio_lower,
+        ratio_upper=ratio_upper,
+        zero_baseline_mode=zero_base,
+        max_log_correction=max_log_correction,
+        high_baseline_threshold=high_baseline_threshold,
+        high_baseline_alpha_cap=high_baseline_alpha_cap,
+        enable_high_baseline_cap=enable_high_baseline_cap,
     )
     metrics = evaluate_predictions(y_true, pred, sample_weight=sample_weight)
     return edges, alpha_by_bin, metrics
@@ -1096,7 +1234,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--enable-posthoc-calibration",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=DEFAULT_ENABLE_POSTHOC_CALIBRATION,
         help="Enable post-hoc calibration fitted on validation predictions.",
     )
@@ -1283,6 +1421,42 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--max-log-correction",
+        type=float,
+        default=DEFAULT_MAX_LOG_CORRECTION,
+        help=(
+            "Clip signed-log correction predictions to [-v, v] before blending. "
+            f"Set <=0 to disable (default: {DEFAULT_MAX_LOG_CORRECTION})."
+        ),
+    )
+    parser.add_argument(
+        "--enable-high-baseline-alpha-cap",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP,
+        help=(
+            "Cap blending alpha for rows with baseline above a train quantile threshold. "
+            f"(default: {DEFAULT_ENABLE_HIGH_BASELINE_ALPHA_CAP})."
+        ),
+    )
+    parser.add_argument(
+        "--high-baseline-quantile",
+        type=float,
+        default=DEFAULT_HIGH_BASELINE_QUANTILE,
+        help=(
+            "Train baseline quantile defining the high-baseline region "
+            f"(default: {DEFAULT_HIGH_BASELINE_QUANTILE})."
+        ),
+    )
+    parser.add_argument(
+        "--high-baseline-alpha-cap",
+        type=float,
+        default=DEFAULT_HIGH_BASELINE_ALPHA_CAP,
+        help=(
+            "Maximum alpha applied when baseline is in the high-baseline region "
+            f"(default: {DEFAULT_HIGH_BASELINE_ALPHA_CAP})."
+        ),
+    )
+    parser.add_argument(
         "--min-feature-non-null-ratio",
         type=float,
         default=DEFAULT_MIN_FEATURE_NON_NULL_RATIO,
@@ -1371,6 +1545,12 @@ def main() -> int:
         return 1
     if args.min_validation_rel_gain < 0:
         print("[ERROR] --min-validation-rel-gain must be >= 0.")
+        return 1
+    if not (0.0 < args.high_baseline_quantile < 1.0):
+        print("[ERROR] --high-baseline-quantile must be in (0, 1).")
+        return 1
+    if args.high_baseline_alpha_cap < 0:
+        print("[ERROR] --high-baseline-alpha-cap must be >= 0.")
         return 1
     if args.calibration_min_rel_gain < 0:
         print("[ERROR] --calibration-min-rel-gain must be >= 0.")
@@ -1552,6 +1732,17 @@ def main() -> int:
         if ratio_lower > ratio_upper:
             ratio_lower, ratio_upper = ratio_upper, ratio_lower
 
+    if args.enable_high_baseline_alpha_cap and not zero_baseline_mode:
+        high_baseline_threshold = float(np.quantile(baseline_train, args.high_baseline_quantile))
+    else:
+        high_baseline_threshold = float("nan")
+    blend_kwargs = {
+        "max_log_correction": float(args.max_log_correction),
+        "high_baseline_threshold": high_baseline_threshold,
+        "high_baseline_alpha_cap": float(args.high_baseline_alpha_cap),
+        "enable_high_baseline_cap": bool(args.enable_high_baseline_alpha_cap),
+    }
+
     if len(y_train_ratio) < 20:
         print("[ERROR] Too few valid training rows after cleaning target/baseline (<20).")
         return 1
@@ -1697,6 +1888,7 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
                 sample_weight=w_val,
+                **blend_kwargs,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -1711,6 +1903,7 @@ def main() -> int:
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
                     sample_weight=w_val,
+                    **blend_kwargs,
                 )
                 use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
                     metrics_global, args.tune_objective
@@ -1847,6 +2040,7 @@ def main() -> int:
                 ratio_upper=ratio_upper_val,
                 objective=args.tune_objective,
                 sample_weight=w_val,
+                **blend_kwargs,
             )
             if args.enable_segmented_alpha:
                 alpha_edges_cand, alpha_by_bin_cand, metrics_segment = fit_segmented_alpha(
@@ -1861,6 +2055,7 @@ def main() -> int:
                     min_bin_rows=args.min_bin_rows,
                     objective=args.tune_objective,
                     sample_weight=w_val,
+                    **blend_kwargs,
                 )
                 use_segment = objective_value(metrics_segment, args.tune_objective) < objective_value(
                     metrics_global, args.tune_objective
@@ -1925,21 +2120,31 @@ def main() -> int:
         val_rmse = float(baseline_val_metrics["rmse"])
         val_r2 = float(baseline_val_metrics["r2"])
         val_trimmed_rmse90 = float(baseline_val_metrics["trimmed_rmse90"])
+    elif use_segment_alpha:
+        best_alpha_by_bin = cap_segmented_alphas(
+            alpha_by_bin=best_alpha_by_bin,
+            edges=best_alpha_edges,
+            high_baseline_threshold=high_baseline_threshold,
+            high_baseline_alpha_cap=float(args.high_baseline_alpha_cap),
+            enable_cap=bool(args.enable_high_baseline_alpha_cap),
+            zero_baseline_mode=zero_baseline_mode,
+        )
 
     # Build selected validation predictions (before optional calibration).
     if use_segment_alpha:
         val_bin_idx = assign_bins(base_val, best_alpha_edges)
         val_alpha = best_alpha_by_bin[val_bin_idx]
     else:
-        val_alpha = np.full_like(selected_gate_prob_val, best_alpha, dtype=float)
-    val_slog_pred = signed_log1p(base_val) + val_alpha * selected_gate_prob_val * corr_pred_val
-    val_pred_selected = signed_expm1(val_slog_pred)
-    val_pred_selected = apply_ratio_clip(
-        val_pred_selected,
-        base_val,
-        ratio_lower_val,
-        ratio_upper_val,
+        val_alpha = best_alpha
+    val_pred_selected = apply_blended_prediction(
+        base=base_val,
+        corr_pred=corr_pred_val,
+        gate_prob=selected_gate_prob_val,
+        alpha=val_alpha,
+        ratio_lower=ratio_lower_val,
+        ratio_upper=ratio_upper_val,
         zero_baseline_mode=zero_baseline_mode,
+        **blend_kwargs,
     )
 
     # Optional post-hoc calibration fitted only on validation predictions (leak-safe for test).
@@ -2015,16 +2220,17 @@ def main() -> int:
         test_bin_idx = assign_bins(safe_base_for_bin, best_alpha_edges)
         test_alpha = best_alpha_by_bin[test_bin_idx]
     else:
-        test_alpha = np.full_like(gate_prob_test, best_alpha, dtype=float)
+        test_alpha = best_alpha
 
-    test_slog_pred = signed_log1p(baseline_test) + test_alpha * gate_prob_test * corr_pred_test
-    test_pred = signed_expm1(test_slog_pred)
-    test_pred = apply_ratio_clip(
-        test_pred,
-        baseline_test,
-        ratio_lower,
-        ratio_upper,
+    test_pred = apply_blended_prediction(
+        base=baseline_test,
+        corr_pred=corr_pred_test,
+        gate_prob=gate_prob_test,
+        alpha=test_alpha,
+        ratio_lower=ratio_lower,
+        ratio_upper=ratio_upper,
         zero_baseline_mode=zero_baseline_mode,
+        **blend_kwargs,
     )
 
     if calibration_used and calibrator is not None:
@@ -2114,6 +2320,17 @@ def main() -> int:
     )
     print(f"Gate threshold |corr_log| (validation/final): {fmt(gate_thr)}/{fmt(gate_thr_full)}")
     print(f"Ratio coverage: {args.ratio_coverage:.2%}")
+    if args.max_log_correction > 0:
+        print(f"Max signed-log correction clip: {args.max_log_correction}")
+    else:
+        print("Max signed-log correction clip: disabled")
+    print(
+        "High-baseline alpha cap enabled/quantile/cap: "
+        f"{'yes' if args.enable_high_baseline_alpha_cap else 'no'}/"
+        f"{args.high_baseline_quantile:.2f}/{args.high_baseline_alpha_cap:.2f}"
+    )
+    if args.enable_high_baseline_alpha_cap and not zero_baseline_mode:
+        print(f"High-baseline threshold (train baseline quantile): {fmt(high_baseline_threshold)}")
     if zero_baseline_mode:
         print("Ratio clip: disabled (zero baseline mode)")
     else:
@@ -2172,16 +2389,27 @@ def main() -> int:
 
     print(f"=== Validation Metrics ({validation_mode_label}) ===")
     print(f"Gate accuracy : {gate_acc_val:.6f}")
+    final_val_pred = val_pred_selected
+    if calibration_used and calibrator is not None:
+        final_val_pred = apply_posthoc_calibrator(
+            calibrator=calibrator,
+            x=val_pred_selected,
+            method=args.calibration_method,
+            base=base_val,
+        )
+    final_val_metrics = evaluate_predictions(y_tar_val, final_val_pred, sample_weight=w_val)
     print("---")
     print(f"Baseline MAE  : {fmt(baseline_val_mae)}")
     print(f"Baseline RMSE : {fmt(baseline_val_rmse)}")
     print(f"Baseline R2   : {fmt(baseline_val_r2)}")
+    print(f"Baseline MedianAE : {fmt(baseline_val_metrics['median_ae'])}")
     print(f"Baseline TrimmedRMSE90 : {fmt(baseline_val_metrics['trimmed_rmse90'])}")
     print("---")
-    print(f"MAE  : {fmt(val_mae)}")
-    print(f"RMSE : {fmt(val_rmse)}")
-    print(f"R2   : {fmt(val_r2)}")
-    print(f"TrimmedRMSE90 : {fmt(val_trimmed_rmse90)}")
+    print(f"MAE  : {fmt(final_val_metrics['mae'])}")
+    print(f"RMSE : {fmt(final_val_metrics['rmse'])}")
+    print(f"R2   : {fmt(final_val_metrics['r2'])}")
+    print(f"MedianAE : {fmt(final_val_metrics['median_ae'])}")
+    print(f"TrimmedRMSE90 : {fmt(final_val_metrics['trimmed_rmse90'])}")
     print()
     print("Prediction complete. New file written with generated column.")
     return 0
