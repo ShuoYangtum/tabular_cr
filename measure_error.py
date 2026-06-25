@@ -8,8 +8,9 @@ Features:
 - Ignores rows with missing/invalid values in target or generated.
 - Prints multiple metrics (MAE, RMSE, MAPE, sMAPE, R2, etc.).
 - By default reports a fair central-band comparison on ~95% of rows,
-  dropping the worst 5% for both generated and baseline (likely noise/outliers).
-- Use --show-full-metrics to also print metrics on all valid rows.
+  dropping the worst 5% (by generated error, or max error when baseline exists).
+- Rows with populated leakage-feature columns are excluded from evaluation by default.
+- When the baseline column is missing, only generated metrics are reported.
 
 Usage:
     # Option 1: set defaults at script top, then run:
@@ -29,7 +30,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,12 +41,64 @@ import pandas as pd
 # =========================
 # You can edit these values directly and run: python measure_error.py
 DEFAULT_FILE_PATH = "generated.csv"
-DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
-DEFAULT_GENERATED_COL = "generated" # esg_firma_wasser_berechnet
-DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
+
+# --- Task config (edit for each target) ---
+DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__elektrizitaetsverbrauch-kwh"
+DEFAULT_GENERATED_COL = "generated"
+DEFAULT_BASELINE_COL = ""  # optional; leave empty when no baseline column exists
+
+LEAKAGE_FEATURES = {
+    "esg_firma_environmental__elektrizitaet__wert",
+    "esg_firma_environmental__elektrizitaet__einheit",
+    "esg_firma_environmental__elektrizitaet__quelle",
+    "esg_firma_environmental__elektrizitaet__anteil-erneuerbar-quelle",
+    "esg_firma_esg-bewertung__bewertung__environmental__elektrizitaetsverbrauch-pro-kopf",
+    "esg_firma_esg-bewertung__punktwert-branchendurchschnitt__elektrizitaetsverbrauch-pro-kopf",
+    "esg_firma_environmental__co2-ausstoss-elektrizitaet__quelle",
+    "esg_firma_environmental__elektrizitaet__anteil-erneuerbar",
+    "esg_firma_environmental__co2-ausstoss-elektrizitaet__wert",
+    "esg_firma_firma-esg-score-2__environmental__elektrizitaetsverbrauch",
+}
+DEFAULT_LEAKAGE_FEATURES = ",".join(sorted(LEAKAGE_FEATURES))
 DEFAULT_TRIM_WORST_FRACTION = 0.05
+DEFAULT_EXCLUDE_LEAKAGE_ROWS = True
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def parse_leakage_feature_list(csv_text: str) -> list[str]:
+    if not csv_text or not str(csv_text).strip():
+        return []
+    return [part.strip() for part in str(csv_text).split(",") if part.strip()]
+
+
+def column_has_leakage_value(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return series.notna()
+    text = series.astype("string")
+    return text.notna() & (text.str.strip() != "")
+
+
+def drop_rows_with_leakage_values(
+    df: pd.DataFrame,
+    leakage_cols: list[str],
+) -> tuple[pd.DataFrame, dict]:
+    present = [c for c in leakage_cols if c in df.columns]
+    if not present:
+        return df, {
+            "leakage_cols_present": [],
+            "leakage_rows_dropped": 0,
+        }
+
+    leak_mask = pd.Series(False, index=df.index)
+    for col in present:
+        leak_mask |= column_has_leakage_value(df[col])
+    dropped = int(leak_mask.sum())
+    filtered = df.loc[~leak_mask].copy()
+    return filtered, {
+        "leakage_cols_present": present,
+        "leakage_rows_dropped": dropped,
+    }
 
 
 def extract_numeric(value) -> float:
@@ -195,37 +248,61 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
+def resolve_baseline_column(df: pd.DataFrame, baseline_col: str) -> Optional[str]:
+    if not baseline_col or not str(baseline_col).strip():
+        return None
+    col = str(baseline_col).strip()
+    if col not in df.columns:
+        return None
+    return col
+
+
 def prepare_joint_data(
     df: pd.DataFrame,
     target_col: str,
     generated_col: str,
-    baseline_col: str,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    baseline_col: Optional[str],
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], dict]:
     if target_col not in df.columns:
         raise KeyError(f"Column '{target_col}' not found. Available columns: {list(df.columns)}")
     if generated_col not in df.columns:
         raise KeyError(f"Column '{generated_col}' not found. Available columns: {list(df.columns)}")
-    if baseline_col not in df.columns:
-        raise KeyError(f"Column '{baseline_col}' not found. Available columns: {list(df.columns)}")
 
+    has_baseline = baseline_col is not None
     raw_count = len(df)
 
-    cleaned = pd.DataFrame(
-        {
-            "target": df[target_col].map(extract_numeric),
-            "generated": df[generated_col].map(extract_numeric),
-            "baseline": df[baseline_col].map(extract_numeric),
-        }
-    )
+    if has_baseline:
+        cleaned = pd.DataFrame(
+            {
+                "target": df[target_col].map(extract_numeric),
+                "generated": df[generated_col].map(extract_numeric),
+                "baseline": df[baseline_col].map(extract_numeric),
+            }
+        )
+        invalid_baseline = int(cleaned["baseline"].isna().sum())
+        required_cols = ["target", "generated", "baseline"]
+    else:
+        cleaned = pd.DataFrame(
+            {
+                "target": df[target_col].map(extract_numeric),
+                "generated": df[generated_col].map(extract_numeric),
+            }
+        )
+        invalid_baseline = 0
+        required_cols = ["target", "generated"]
 
     invalid_target = int(cleaned["target"].isna().sum())
     invalid_generated = int(cleaned["generated"].isna().sum())
-    invalid_baseline = int(cleaned["baseline"].isna().sum())
 
-    cleaned = cleaned.dropna(subset=["target", "generated", "baseline"])
+    cleaned = cleaned.dropna(subset=required_cols)
     zero_target_rows = int((cleaned["target"] == 0).sum())
-    zero_baseline_rows = int((cleaned["baseline"] == 0).sum())
-    cleaned = cleaned[(cleaned["target"] != 0) & (cleaned["baseline"] != 0)]
+    if has_baseline:
+        zero_baseline_rows = int((cleaned["baseline"] == 0).sum())
+        cleaned = cleaned[(cleaned["target"] != 0) & (cleaned["baseline"] != 0)]
+    else:
+        zero_baseline_rows = 0
+        cleaned = cleaned[cleaned["target"] != 0]
+
     used_count = len(cleaned)
     dropped_count = raw_count - used_count
 
@@ -241,12 +318,15 @@ def prepare_joint_data(
         "invalid_baseline_rows": invalid_baseline,
         "zero_target_rows": zero_target_rows,
         "zero_baseline_rows": zero_baseline_rows,
+        "has_baseline": has_baseline,
+        "baseline_col": baseline_col,
     }
 
+    y_base = cleaned["baseline"].to_numpy(dtype=float) if has_baseline else None
     return (
         cleaned["target"].to_numpy(dtype=float),
         cleaned["generated"].to_numpy(dtype=float),
-        cleaned["baseline"].to_numpy(dtype=float),
+        y_base,
         info,
     )
 
@@ -254,14 +334,15 @@ def prepare_joint_data(
 def fair_outlier_trim_mask(
     y_true: np.ndarray,
     y_gen: np.ndarray,
-    y_base: np.ndarray,
+    y_base: Optional[np.ndarray],
     trim_worst_fraction: float,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """
-    Drop the worst rows for BOTH models using the same mask.
+    Drop the worst rows using the same mask for both methods when baseline exists.
 
-  Score per row = max(|generated-target|, |baseline-target|), so a row is
-    excluded when either method has a very large error (likely bad/outlier case).
+    Score per row:
+    - with baseline: max(|generated-target|, |baseline-target|)
+    - without baseline: |generated-target|
     """
     n = len(y_true)
     keep_all = np.ones(n, dtype=bool)
@@ -278,8 +359,11 @@ def fair_outlier_trim_mask(
         raise ValueError("--trim-worst-fraction must be in (0, 0.5).")
 
     err_gen = np.abs(y_gen - y_true)
-    err_base = np.abs(y_base - y_true)
-    score = np.maximum(err_gen, err_base)
+    if y_base is None:
+        score = err_gen
+    else:
+        err_base = np.abs(y_base - y_true)
+        score = np.maximum(err_gen, err_base)
     k_drop = int(math.ceil(n * trim_worst_fraction))
     if k_drop <= 0:
         return keep_all, info
@@ -311,9 +395,9 @@ def fair_outlier_trim_mask(
 
 def format_metrics_table(
     metrics_gen: dict,
-    metrics_base: dict,
+    metrics_base: Optional[dict],
     generated_col: str,
-    baseline_col: str,
+    baseline_col: Optional[str],
 ) -> pd.DataFrame:
     metric_order = [
         "count_used",
@@ -352,22 +436,27 @@ def format_metrics_table(
         "r2": "R2",
     }
     rows = []
+    gen_header = f"{generated_col} (generated)"
+    base_header = f"{baseline_col} (baseline)" if baseline_col else None
+    include_baseline = metrics_base is not None and base_header is not None
     for key in metric_order:
         v_gen = metrics_gen[key]
-        v_base = metrics_base[key]
         if key == "count_used":
             gen_text = str(int(v_gen))
-            base_text = str(int(v_base))
         else:
             gen_text = fmt(v_gen)
-            base_text = fmt(v_base)
-        rows.append(
-            {
-                "metric": metric_name_map[key],
-                f"{generated_col} (generated)": gen_text,
-                f"{baseline_col} (baseline)": base_text,
-            }
-        )
+        row = {
+            "metric": metric_name_map[key],
+            gen_header: gen_text,
+        }
+        if include_baseline:
+            v_base = metrics_base[key]
+            if key == "count_used":
+                base_text = str(int(v_base))
+            else:
+                base_text = fmt(v_base)
+            row[base_header] = base_text
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -399,7 +488,27 @@ def main() -> int:
     parser.add_argument(
         "--baseline-col",
         default=DEFAULT_BASELINE_COL,
-        help=f"Column name for baseline values (default: {DEFAULT_BASELINE_COL})",
+        help=(
+            "Optional baseline column for comparison. Leave empty or omit the column "
+            "in the file to evaluate generated predictions only."
+        ),
+    )
+    parser.add_argument(
+        "--leakage-features",
+        default=DEFAULT_LEAKAGE_FEATURES,
+        help=(
+            "Comma-separated leakage columns. When --exclude-leakage-rows is enabled, "
+            "rows with any non-empty value in these columns are dropped before metrics."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-leakage-rows",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_EXCLUDE_LEAKAGE_ROWS,
+        help=(
+            "Drop rows where any leakage feature column has a value before computing metrics "
+            f"(default: {DEFAULT_EXCLUDE_LEAKAGE_ROWS})."
+        ),
     )
     parser.add_argument(
         "--trim-worst-fraction",
@@ -435,9 +544,31 @@ def main() -> int:
 
     try:
         df = load_table(file_path)
+        leakage_cols = parse_leakage_feature_list(args.leakage_features)
+        leakage_info = {
+            "leakage_cols_present": [],
+            "leakage_rows_dropped": 0,
+        }
+        if args.exclude_leakage_rows and leakage_cols:
+            df, leakage_info = drop_rows_with_leakage_values(df, leakage_cols)
+            if leakage_info["leakage_rows_dropped"] > 0:
+                print(
+                    f"[INFO] Excluded {leakage_info['leakage_rows_dropped']} row(s) with leakage "
+                    f"feature values ({len(leakage_info['leakage_cols_present'])} column(s) checked)."
+                )
+            elif leakage_info["leakage_cols_present"]:
+                print(
+                    "[INFO] Leakage feature columns present but no populated rows were found; "
+                    "kept all rows for evaluation."
+                )
+        baseline_col_resolved = resolve_baseline_column(df, args.baseline_col)
         y_true, y_pred_gen, y_pred_base, info = prepare_joint_data(
-            df, args.target_col, args.generated_col, args.baseline_col
+            df, args.target_col, args.generated_col, baseline_col_resolved
         )
+        has_baseline = bool(info["has_baseline"])
+        info.update(leakage_info)
+        info["exclude_leakage_rows"] = bool(args.exclude_leakage_rows)
+        info["leakage_feature_roots"] = len(leakage_cols)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return 1
@@ -445,21 +576,43 @@ def main() -> int:
     print("=== Data Cleaning Summary ===")
     print(f"File: {file_path}")
     print(f"Total rows: {info['raw_rows']}")
-    print(f"Used rows (shared by generated & baseline): {info['used_rows']}")
+    if has_baseline:
+        print(f"Used rows (shared by generated & baseline): {info['used_rows']}")
+    else:
+        print(f"Used rows (target & generated): {info['used_rows']}")
+        print("Baseline column: not used (missing or not configured)")
     print(f"Dropped rows: {info['dropped_rows']}")
-    print(
-        "Rows with invalid values (target/generated/baseline): "
-        f"{info['invalid_target_rows']}/"
-        f"{info['invalid_generated_rows']}/"
-        f"{info['invalid_baseline_rows']}"
-    )
-    print(
-        "Rows filtered by zero value (target/baseline): "
-        f"{info['zero_target_rows']}/{info['zero_baseline_rows']}"
-    )
+    if has_baseline:
+        print(
+            "Rows with invalid values (target/generated/baseline): "
+            f"{info['invalid_target_rows']}/"
+            f"{info['invalid_generated_rows']}/"
+            f"{info['invalid_baseline_rows']}"
+        )
+        print(
+            "Rows filtered by zero value (target/baseline): "
+            f"{info['zero_target_rows']}/{info['zero_baseline_rows']}"
+        )
+    else:
+        print(
+            "Rows with invalid values (target/generated): "
+            f"{info['invalid_target_rows']}/{info['invalid_generated_rows']}"
+        )
+        print(f"Rows filtered by zero value (target): {info['zero_target_rows']}")
+    if info.get("exclude_leakage_rows"):
+        present = info.get("leakage_cols_present") or []
+        print(
+            "Leakage row filter: "
+            f"{info.get('leakage_rows_dropped', 0)} row(s) dropped, "
+            f"{len(present)} leakage column(s) present in file"
+        )
     print()
 
-    if np.allclose(y_pred_gen, y_pred_base, rtol=0.0, atol=1e-9, equal_nan=True):
+    if (
+        has_baseline
+        and y_pred_base is not None
+        and np.allclose(y_pred_gen, y_pred_base, rtol=0.0, atol=1e-9, equal_nan=True)
+    ):
         print(
             "[NOTE] generated and baseline predictions are identical on all evaluated rows.\n"
             "       Training likely used alpha=0 and/or fallback to baseline (no correction applied).\n"
@@ -485,9 +638,12 @@ def main() -> int:
             y_base_eval = y_pred_base[keep_mask]
 
     metrics_gen = compute_metrics(y_true_eval, y_gen_eval)
-    metrics_base = compute_metrics(y_true_eval, y_base_eval)
+    metrics_base = compute_metrics(y_true_eval, y_base_eval) if has_baseline and y_base_eval is not None else None
     table_df = format_metrics_table(
-        metrics_gen, metrics_base, args.generated_col, args.baseline_col
+        metrics_gen,
+        metrics_base,
+        args.generated_col,
+        baseline_col_resolved,
     )
 
     if trim_info is not None and int(trim_info["kept_rows"]) > 0:
@@ -495,12 +651,19 @@ def main() -> int:
         print(
             f"=== Primary Metrics (fair trim, central ~{kept_pct:.0f}% rows) ==="
         )
-        print(
-            "Trim rule: drop the worst "
-            f"{args.trim_worst_fraction:.0%} rows by "
-            "max(|generated-target|, |baseline-target|); "
-            "same rows removed for both methods (likely noisy tail)."
-        )
+        if has_baseline:
+            print(
+                "Trim rule: drop the worst "
+                f"{args.trim_worst_fraction:.0%} rows by "
+                "max(|generated-target|, |baseline-target|); "
+                "same rows removed for both methods (likely noisy tail)."
+            )
+        else:
+            print(
+                "Trim rule: drop the worst "
+                f"{args.trim_worst_fraction:.0%} rows by "
+                "|generated-target| (likely noisy tail)."
+            )
         print(
             f"Rows kept/trimmed: {int(trim_info['kept_rows'])}/"
             f"{int(trim_info['trimmed_rows'])} "
@@ -514,9 +677,14 @@ def main() -> int:
     if args.show_full_metrics and args.trim_worst_fraction > 0 and trim_info is not None:
         if int(trim_info["kept_rows"]) > 0 and int(trim_info["kept_rows"]) < len(y_true):
             metrics_gen_all = compute_metrics(y_true, y_pred_gen)
-            metrics_base_all = compute_metrics(y_true, y_pred_base)
+            metrics_base_all = (
+                compute_metrics(y_true, y_pred_base) if has_baseline and y_pred_base is not None else None
+            )
             table_all_df = format_metrics_table(
-                metrics_gen_all, metrics_base_all, args.generated_col, args.baseline_col
+                metrics_gen_all,
+                metrics_base_all,
+                args.generated_col,
+                baseline_col_resolved,
             )
             print()
             print("=== Full Metrics (all valid rows, includes noisy tail) ===")

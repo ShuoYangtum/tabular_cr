@@ -54,9 +54,26 @@ from sklearn.preprocessing import OrdinalEncoder
 DEFAULT_TRAIN_FILE = "train_clean.csv"
 DEFAULT_TEST_FILE = "test_clean.csv"
 DEFAULT_OUTPUT_FILE = "generated.csv"
-DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__wasserverbrauch-m3"
-DEFAULT_BASELINE_COL = "esg_firma_wasser_berechnet"
+
+# --- Task config (edit for each target) ---
+DEFAULT_TARGET_COL = "esg_firma_esg-bewertung__input__elektrizitaetsverbrauch-kwh"
+DEFAULT_BASELINE_COL = ""  # optional; leave empty when no baseline column exists
 DEFAULT_GENERATED_COL = "generated"
+
+LEAKAGE_FEATURES = {
+    "esg_firma_environmental__elektrizitaet__wert",
+    "esg_firma_environmental__elektrizitaet__einheit",
+    "esg_firma_environmental__elektrizitaet__quelle",
+    "esg_firma_environmental__elektrizitaet__anteil-erneuerbar-quelle",
+    "esg_firma_esg-bewertung__bewertung__environmental__elektrizitaetsverbrauch-pro-kopf",
+    "esg_firma_esg-bewertung__punktwert-branchendurchschnitt__elektrizitaetsverbrauch-pro-kopf",
+    "esg_firma_environmental__co2-ausstoss-elektrizitaet__quelle",
+    "esg_firma_environmental__elektrizitaet__anteil-erneuerbar",
+    "esg_firma_environmental__co2-ausstoss-elektrizitaet__wert",
+    "esg_firma_firma-esg-score-2__environmental__elektrizitaetsverbrauch",
+}
+DEFAULT_LEAKAGE_FEATURES = ",".join(sorted(LEAKAGE_FEATURES))
+
 DEFAULT_N_ESTIMATORS = 300
 DEFAULT_RATIO_COVERAGE = 0.93
 DEFAULT_LLM_MODEL_PATH = "/data/models/Qwen3-4B-Instruct-2507"
@@ -102,6 +119,38 @@ NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 MISSING_STRINGS = {"", "nan", "none", "null", "na", "n/a", "-", "--", "unknown"}
 FLOAT32_SAFE_MAX = np.finfo(np.float32).max * 0.99
 BASELINE_EPS = 1e-12
+
+
+def parse_leakage_feature_list(csv_text: str) -> List[str]:
+    if not csv_text or not str(csv_text).strip():
+        return []
+    return [part.strip() for part in str(csv_text).split(",") if part.strip()]
+
+
+def is_leakage_feature_column(col: str, leakage_roots: set[str]) -> bool:
+    if col in leakage_roots:
+        return True
+    for root in leakage_roots:
+        if col.startswith(f"{root}__"):
+            return True
+    return False
+
+
+def filter_leakage_feature_columns(
+    feature_cols: List[str],
+    leakage_roots: List[str],
+) -> Tuple[List[str], List[str]]:
+    roots = set(leakage_roots)
+    if not roots:
+        return list(feature_cols), []
+    kept: List[str] = []
+    dropped: List[str] = []
+    for col in feature_cols:
+        if is_leakage_feature_column(col, roots):
+            dropped.append(col)
+        else:
+            kept.append(col)
+    return kept, dropped
 
 
 def ensure_baseline_column(df: pd.DataFrame, baseline_col: str) -> bool:
@@ -603,11 +652,13 @@ def build_semantic_cache_fingerprint(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     feature_cols: List[str],
+    leakage_roots: List[str] | None = None,
 ) -> str:
     payload = {
         "train_columns": list(train_df.columns),
         "test_columns": list(test_df.columns),
         "feature_cols": list(feature_cols),
+        "leakage_roots": list(leakage_roots or []),
     }
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1255,12 +1306,24 @@ def main() -> int:
     parser.add_argument(
         "--baseline-col",
         default=DEFAULT_BASELINE_COL,
-        help=f"Baseline column used for ratio learning (default: {DEFAULT_BASELINE_COL})",
+        help=(
+            "Optional baseline column for ratio learning. "
+            "Leave empty when no baseline exists (zero-baseline direct prediction mode)."
+        ),
     )
     parser.add_argument(
         "--generated-col",
         default=DEFAULT_GENERATED_COL,
         help="Prediction column name in output file",
+    )
+    parser.add_argument(
+        "--leakage-features",
+        default=DEFAULT_LEAKAGE_FEATURES,
+        help=(
+            "Comma-separated leakage columns to exclude from training. "
+            "Defaults to LEAKAGE_FEATURES at top of script. Derived columns "
+            "(e.g. col__year) are excluded too."
+        ),
     )
     parser.add_argument(
         "--numeric-like-threshold",
@@ -1681,8 +1744,15 @@ def main() -> int:
 
     # Build feature set from train columns excluding target and baseline.
     feature_cols = [c for c in train_df.columns if c not in {target_col, baseline_col}]
+    leakage_roots = parse_leakage_feature_list(args.leakage_features)
+    feature_cols, dropped_leakage_cols = filter_leakage_feature_columns(feature_cols, leakage_roots)
+    if dropped_leakage_cols:
+        print(
+            f"[INFO] Excluded {len(dropped_leakage_cols)} leakage feature column(s) from training: "
+            f"{dropped_leakage_cols[:8]}{'...' if len(dropped_leakage_cols) > 8 else ''}"
+        )
     if not feature_cols:
-        print("[ERROR] No feature columns found after excluding target and baseline columns.")
+        print("[ERROR] No feature columns left after excluding target, baseline, and leakage columns.")
         return 1
 
     # Explicitly keep test target untouched and never use it as a feature.
@@ -1698,7 +1768,9 @@ def main() -> int:
     }
     feature_semantic_decisions: Dict[str, Dict[str, Any]] = {}
     semantic_cache_path = Path(args.feature_semantic_cache)
-    semantic_fingerprint = build_semantic_cache_fingerprint(train_df, test_df, feature_cols)
+    semantic_fingerprint = build_semantic_cache_fingerprint(
+        train_df, test_df, feature_cols, leakage_roots=leakage_roots
+    )
 
     if not args.refresh_feature_semantic_cache:
         cached_decisions = load_semantic_cache(semantic_cache_path, semantic_fingerprint)
@@ -1740,6 +1812,12 @@ def main() -> int:
         feature_cols=feature_cols,
         decisions=feature_semantic_decisions,
     )
+    feature_cols, dropped_leakage_derived = filter_leakage_feature_columns(feature_cols, leakage_roots)
+    if dropped_leakage_derived:
+        print(
+            f"[INFO] Excluded {len(dropped_leakage_derived)} leakage-derived feature column(s): "
+            f"{dropped_leakage_derived[:8]}{'...' if len(dropped_leakage_derived) > 8 else ''}"
+        )
     if not feature_cols:
         print("[ERROR] No feature columns left after semantic feature engineering.")
         return 1
@@ -2379,6 +2457,15 @@ def main() -> int:
     print(f"LLM profiling used: {'yes' if llm_used else 'no'}")
     print(f"Feature semantic cache used: {'yes' if llm_cache_used else 'no'}")
     print(f"Feature semantic cache file: {semantic_cache_path}")
+    print(
+        f"Leakage features excluded: {len(leakage_roots)} root column(s), "
+        f"{len(dropped_leakage_cols) + len(dropped_leakage_derived)} feature column(s) dropped"
+    )
+    if leakage_roots:
+        preview = ", ".join(leakage_roots[:4])
+        if len(leakage_roots) > 4:
+            preview += ", ..."
+        print(f"Leakage feature roots: {preview}")
     print(f"Dropped id-like columns: {llm_summary['dropped_id_like_cols']}")
     print(f"Datetime-expanded columns: {llm_summary['datetime_expanded_cols']}")
     print(f"Year-transformed columns: {llm_summary['year_transformed_cols']}")
