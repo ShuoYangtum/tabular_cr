@@ -9,7 +9,8 @@ Features:
 - Prints multiple metrics (MAE, RMSE, MAPE, sMAPE, R2, etc.).
 - By default reports a fair central-band comparison on ~95% of rows,
   dropping the worst 5% (by generated error, or max error when baseline exists).
-- Rows with populated leakage-feature columns are excluded from evaluation by default.
+- Leakage columns are excluded during training only; measure_error does not filter
+  rows by LEAKAGE_FEATURES unless you pass --exclude-leakage-rows.
 - When the baseline column is missing, only generated metrics are reported.
 
 Usage:
@@ -61,7 +62,9 @@ LEAKAGE_FEATURES = {
 }
 DEFAULT_LEAKAGE_FEATURES = ",".join(sorted(LEAKAGE_FEATURES))
 DEFAULT_TRIM_WORST_FRACTION = 0.05
-DEFAULT_EXCLUDE_LEAKAGE_ROWS = True
+# Keep False: generated.csv still contains leakage columns from the source table;
+# almost every row would be removed if we filtered on them here.
+DEFAULT_EXCLUDE_LEAKAGE_ROWS = False
 
 NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
@@ -82,23 +85,38 @@ def column_has_leakage_value(series: pd.Series) -> pd.Series:
 def drop_rows_with_leakage_values(
     df: pd.DataFrame,
     leakage_cols: list[str],
+    *,
+    max_drop_fraction: float = 0.95,
 ) -> tuple[pd.DataFrame, dict]:
     present = [c for c in leakage_cols if c in df.columns]
     if not present:
         return df, {
             "leakage_cols_present": [],
             "leakage_rows_dropped": 0,
+            "leakage_filter_skipped": False,
         }
 
     leak_mask = pd.Series(False, index=df.index)
     for col in present:
         leak_mask |= column_has_leakage_value(df[col])
     dropped = int(leak_mask.sum())
-    filtered = df.loc[~leak_mask].copy()
-    return filtered, {
+    info = {
         "leakage_cols_present": present,
         "leakage_rows_dropped": dropped,
+        "leakage_filter_skipped": False,
     }
+    if dropped == 0:
+        return df, info
+    if dropped >= len(df) or (dropped / len(df)) > max_drop_fraction:
+        info["leakage_filter_skipped"] = True
+        info["leakage_skip_reason"] = (
+            "leakage filter would remove too many rows "
+            f"({dropped}/{len(df)}); kept all rows for evaluation"
+        )
+        return df, info
+
+    filtered = df.loc[~leak_mask].copy()
+    return filtered, info
 
 
 def extract_numeric(value) -> float:
@@ -497,8 +515,8 @@ def main() -> int:
         "--leakage-features",
         default=DEFAULT_LEAKAGE_FEATURES,
         help=(
-            "Comma-separated leakage columns. When --exclude-leakage-rows is enabled, "
-            "rows with any non-empty value in these columns are dropped before metrics."
+            "Leakage column list (synced with train script). Only used when "
+            "--exclude-leakage-rows is enabled."
         ),
     )
     parser.add_argument(
@@ -506,8 +524,9 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=DEFAULT_EXCLUDE_LEAKAGE_ROWS,
         help=(
-            "Drop rows where any leakage feature column has a value before computing metrics "
-            f"(default: {DEFAULT_EXCLUDE_LEAKAGE_ROWS})."
+            "Drop rows where any leakage column has a value before metrics. "
+            "Usually leave disabled: generated.csv still carries source columns and "
+            f"this would remove almost all rows (default: {DEFAULT_EXCLUDE_LEAKAGE_ROWS})."
         ),
     )
     parser.add_argument(
@@ -551,7 +570,13 @@ def main() -> int:
         }
         if args.exclude_leakage_rows and leakage_cols:
             df, leakage_info = drop_rows_with_leakage_values(df, leakage_cols)
-            if leakage_info["leakage_rows_dropped"] > 0:
+            if leakage_info.get("leakage_filter_skipped"):
+                print(f"[WARN] {leakage_info['leakage_skip_reason']}")
+                print(
+                    "[WARN] Leakage columns are already excluded in train_and_generate.py; "
+                    "row filtering in measure_error is usually not needed."
+                )
+            elif leakage_info["leakage_rows_dropped"] > 0:
                 print(
                     f"[INFO] Excluded {leakage_info['leakage_rows_dropped']} row(s) with leakage "
                     f"feature values ({len(leakage_info['leakage_cols_present'])} column(s) checked)."
