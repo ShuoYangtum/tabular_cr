@@ -660,7 +660,8 @@ def main() -> int:
         else:
             y_true_eval = y_true[keep_mask]
             y_gen_eval = y_pred_gen[keep_mask]
-            y_base_eval = y_pred_base[keep_mask]
+            if y_pred_base is not None:
+                y_base_eval = y_pred_base[keep_mask]
 
     metrics_gen = compute_metrics(y_true_eval, y_gen_eval)
     metrics_base = compute_metrics(y_true_eval, y_base_eval) if has_baseline and y_base_eval is not None else None
