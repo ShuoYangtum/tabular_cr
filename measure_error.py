@@ -354,13 +354,17 @@ def fair_outlier_trim_mask(
     y_gen: np.ndarray,
     y_base: Optional[np.ndarray],
     trim_worst_fraction: float,
+    trim_by: str = "error",
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """
     Drop the worst rows using the same mask for both methods when baseline exists.
 
     Score per row:
-    - with baseline: max(|generated-target|, |baseline-target|)
-    - without baseline: |generated-target|
+    - trim_by="error": max(|generated-target|, |baseline-target|) (or generated
+      error only when no baseline). Depends on the predictions, so trimmed
+      metrics from different runs are computed on different row subsets.
+    - trim_by="target": |target|. Prediction-independent, so the kept subset is
+      stable across runs/methods and metrics stay comparable.
     """
     n = len(y_true)
     keep_all = np.ones(n, dtype=bool)
@@ -375,13 +379,18 @@ def fair_outlier_trim_mask(
 
     if not (0.0 < trim_worst_fraction < 0.5):
         raise ValueError("--trim-worst-fraction must be in (0, 0.5).")
+    if trim_by not in {"error", "target"}:
+        raise ValueError("--trim-by must be 'error' or 'target'.")
 
-    err_gen = np.abs(y_gen - y_true)
-    if y_base is None:
-        score = err_gen
+    if trim_by == "target":
+        score = np.abs(y_true)
     else:
-        err_base = np.abs(y_base - y_true)
-        score = np.maximum(err_gen, err_base)
+        err_gen = np.abs(y_gen - y_true)
+        if y_base is None:
+            score = err_gen
+        else:
+            err_base = np.abs(y_base - y_true)
+            score = np.maximum(err_gen, err_base)
     k_drop = int(math.ceil(n * trim_worst_fraction))
     if k_drop <= 0:
         return keep_all, info
@@ -540,6 +549,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--trim-by",
+        choices=["error", "target"],
+        default="error",
+        help=(
+            "Trim criterion: 'error' drops rows with the largest prediction error "
+            "(fair max-error mask, but subset changes with each run); 'target' drops "
+            "rows with the largest |target| (prediction-independent, comparable "
+            "across runs/methods). (default: error)"
+        ),
+    )
+    parser.add_argument(
         "--show-full-metrics",
         action="store_true",
         help="Also print metrics on all valid rows (in addition to trimmed primary report).",
@@ -653,7 +673,7 @@ def main() -> int:
 
     if args.trim_worst_fraction > 0:
         keep_mask, trim_info = fair_outlier_trim_mask(
-            y_true, y_pred_gen, y_pred_base, args.trim_worst_fraction
+            y_true, y_pred_gen, y_pred_base, args.trim_worst_fraction, args.trim_by
         )
         if int(trim_info["kept_rows"]) == 0:
             print("[WARN] Fair trim removed all rows; falling back to all valid rows.")
@@ -677,7 +697,13 @@ def main() -> int:
         print(
             f"=== Primary Metrics (fair trim, central ~{kept_pct:.0f}% rows) ==="
         )
-        if has_baseline:
+        if args.trim_by == "target":
+            print(
+                "Trim rule: drop the largest "
+                f"{args.trim_worst_fraction:.0%} rows by |target| "
+                "(prediction-independent subset, comparable across runs)."
+            )
+        elif has_baseline:
             print(
                 "Trim rule: drop the worst "
                 f"{args.trim_worst_fraction:.0%} rows by "
