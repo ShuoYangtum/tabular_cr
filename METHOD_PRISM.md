@@ -1,136 +1,422 @@
-# PRISM
+# PRISM Prediction Tool Guide
 
-## Prior-anchored Robust quantile modeling with conformal trust Intervals for Skewed Measurements
+**PRISM** (Prior-anchored Robust quantile modeling with conformal trust Intervals for Skewed Measurements)  
+A tabular prediction tool for ESG enterprise resource consumption (water use, electricity use, and similar metrics).
 
-**Implementation:** `train_prism.py` (replaces the correction pipeline in `train_and_generate.py`)
-**Application domain:** ESG resource-consumption prediction (water `wasserverbrauch-m3`, electricity `elektrizitaetsverbrauch-kwh`) on dirty, heavy-tailed company tables.
 
----
+| Item                | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| Entry point         | `train_prism.py`                                                   |
+| Optional evaluation | `measure_error.py` (requires ground-truth labels in the test file) |
+| Delivery form       | Single-script package; no external LLM or GPU service required     |
 
-## 1. Why the problem is genuinely hard
-
-Diagnostics on the water task (`gap_diagnostics/`) show three structural difficulties that defeat off-the-shelf regression:
-
-1. **Extreme heavy tails.** The target spans 8 orders of magnitude (median ≈ 190 m³, max ≈ 4.6·10⁸ m³). The top 1% of test rows carry **88% of total MAE**; the top 5% carry **99%**. Any model tuned on squared or absolute error in the original scale is effectively trained on 130 rows of near-noise.
-2. **Dirty, weakly-informative features.** 550+ mixed columns with missing rates up to 99%, numbers embedded in strings, IDs, dates and free text.
-3. **Train→test distribution shift.** A domain classifier separates train from test with AUC ≈ 0.96, and the target/baseline ratio distribution shifts visibly — corrections that validate in-sample do not transfer.
-
-The previous residual-correction pipeline improved RMSE slightly but degraded MedianAE from 1 197 to 5 800 and TrimmedMAE90 from 27k to 609k on test: it damaged the 95% of predictions the baseline already got right, while failing to fix the tail. PRISM is designed so that this failure mode is **structurally impossible**.
 
 ---
 
-## 2. Method overview
+## 1. Purpose
 
-```
-            ┌────────────────────────────────────────────────────────┐
- raw table →│ 1  Heuristic semantic typing & cleaning (no LLM)       │
-            │ 2  Anchor construction                                 │
-            │      water:  rule-based baseline (feature + anchor)    │
-            │      electricity: hierarchical EB prior (synthesized)  │
-            │ 3  Quantile GBDT ensemble in log space (q05…q95)       │
-            │ 4  Tail-risk head  P(top-decile | X)                   │
-            │ 5  OOF tuning: shrinkage λ + tail switch (τ, q_hi)     │
-            │      under MedianAE + MAE guards, with anchor fallback │
-            │ 6  Conformalized intervals (CQR) + trust scores        │
-            └────────────────────────────────────────────────────────┘
- output: generated, generated_low/high, generated_trust, generated_tail_risk
-```
+PRISM produces batch predictions for company-level ESG indicators when:
 
-### 2.1 Median-optimal robust core (heavy-tail treatment)
+- feature quality is mixed and incomplete,
+- targets span many orders of magnitude,
+- a small share of extreme cases dominates total error.
 
-All learning happens on `z = log1p(target)` with **quantile (pinball) loss**. Two facts make this the right objective for this data:
+Unlike a generic regressor, PRISM:
 
-- The conditional **median is invariant under monotone transforms**: the q50 model in log space, mapped back with `expm1`, is still the conditional median in m³/kWh — i.e. the **MAE-optimal point prediction** — while the loss itself never sees the raw tail magnitudes.
-- Log-space errors are scale-free: a 2× error on a 100 m³ firm and on a 10⁷ m³ firm contribute equally, so the model learns from *all* 8 000 rows instead of the 130 largest.
-
-This removes the need for the old signed-log residual target, gate classifier, ratio clipping and alpha grids — one principled objective replaces four interacting heuristics.
-
-### 2.2 Unified anchor: rule-based baseline or synthesized empirical-Bayes prior
-
-PRISM always has an **anchor** `a(x)` — a conservative reference prediction:
-
-- **Water:** the rule-based `wasser_berechnet` baseline (also fed to the model as a feature, together with `baseline − prior` as a "how unusual is this baseline" signal).
-- **Electricity (no baseline):** PRISM synthesizes one — a **hierarchical empirical-Bayes prior**: shrunk group medians of `z` over automatically selected categorical columns (industry, legal form, …), each level shrunk toward its parent with pseudo-count *m*:
-
-  `prior_g = (n_g · median_g + m · prior_parent) / (n_g + m)`
-
-  Columns are chosen by cross-fitted MAE reduction; the prior itself is computed **out-of-fold**, so it is leak-free. This replaces the previous all-zero placeholder column and gives both tasks the same code path — the method *brings its own baseline* when the domain doesn't provide one.
-
-### 2.3 Tail-risk head (attacking the top-5% error mass)
-
-A classifier estimates `p_tail(x) = P(target in top decile | x)`. For samples with `p_tail ≥ τ` the point estimate switches from the median to an upper quantile `q_hi` — an **asymmetric, risk-stratified point estimate**: under-predicting a 10⁷ m³ firm by 100× costs far more MAE than slightly over-predicting a mid-size firm. τ and q_hi are tuned out-of-fold, and "never switch" is always in the candidate set.
-
-### 2.4 Conservative shrinkage with deployment guards
-
-The final point estimate in log space is
-
-`ẑ = a + λ · (z_model − a)` (with the tail switch applied inside `z_model`)
-
-λ ∈ {0, 0.2, …, 1} is tuned on **out-of-fold** predictions with a scale-free objective (log-MAE, optionally reweighted toward the test feature distribution by a cross-validated domain classifier). Two hard guards apply whenever a real baseline exists:
-
-- **MedianAE guard:** candidates whose OOF MedianAE exceeds the baseline's by >5% are rejected outright.
-- **MAE guard:** likewise for MAE.
-- **Fallback:** if no candidate beats the anchor by ≥0.5% on the objective, the pipeline outputs the anchor unchanged.
-
-The system can therefore *only* deploy a model that improves relative accuracy **without regressing the metrics the baseline is judged by**.
-
-### 2.5 Conformalized intervals and trust scores
-
-The (q05, q95) quantile models give a nominal 90% interval, calibrated with **Conformalized Quantile Regression**: the interval is widened by the empirical (1−α)-quantile of OOF conformity scores, yielding **distribution-free finite-sample coverage** — verified at 0.90 on held-out data. Each prediction ships with:
-
-| Column | Meaning |
-|---|---|
-| `generated` | point prediction |
-| `generated_low / _high` | conformal 90% interval |
-| `generated_trust` | 1 − percentile rank of (log-scale) interval width — how much to trust this row |
-| `generated_tail_risk` | P(top-decile consumer) — which firms drive aggregate error |
-
-Because ~90% of error concentrates in ~5% of firms, *telling the user which firms those are* is worth as much as the point estimate itself.
+- **With a business baseline**: applies a **limited, guarded correction** so typical firms are not made worse while chasing overall MAE.
+- **Without a baseline**: **builds its own prior anchor** from categorical structure in the data.
+- **Never uses test-set labels** during training or tuning. The test file supplies features (and an optional baseline) for inference only.
 
 ---
 
-## 3. Relation to SAGE (ACL 2026)
+## 2. Quick Start
 
-PRISM applies the same design philosophy as SAGE (*Sparse Adaptive Guidance for Dependency-Aware Tabular Generation*) to the discriminative side:
-
-| Principle | SAGE | PRISM |
-|---|---|---|
-| Sparse intervention | condition only on high-MI pseudo-features | deviate from the anchor only where the model has demonstrated OOF gains; tail switch only above τ |
-| Adaptive strength | logit sharpening/smoothing by context informativeness | λ-shrinkage toward the anchor; per-sample tail switching by p_tail |
-| Constraint awareness | reduce constraint-violation rate | median/MAE guards + anchor fallback; conformal coverage guarantee |
-| Value-conditioned structure | value-dependent dependency graph | hierarchical EB prior conditioned on categorical context |
-
----
-
-## 4. What was removed (and why)
-
-| Removed | Reason |
-|---|---|
-| Qwen3 LLM feature profiler | Heuristic typing (strict numeric-fraction test, datetime/year detection, ID hints) reaches the same decisions at zero cost; removes a GPU dependency and 200+ lines |
-| Gate classifier + α grid + segmented α + ratio clipping + high-baseline caps | Replaced by one shrinkage parameter λ + guards; the old stack had 5 interacting knobs that overfit validation (observed: MedianAE 1 197 → 5 800 on test) |
-| Signed-log residual target | Quantile regression on `log1p(target)` is median-optimal by construction |
-| All-zero synthetic baseline column | Replaced by the EB prior anchor |
-
----
-
-## 5. Validation protocol
-
-- **OOF (stratified 5-fold by log-target decile):** model vs anchor on MAE / MedianAE / WAPE / log-MAE / TrimmedMAE90, plus a per-magnitude-bin win-rate table (`prism_report.json`, `prism_oof.csv`).
-- **Interval calibration:** raw vs conformal coverage.
-- **Synthetic end-to-end test** (heavy-tailed dirty data, 3% wild outliers, broken-baseline segments): PRISM improved every metric over the baseline in both modes (e.g. log-MAE −17%, MedianAE −12%), held-out conformal coverage 0.91/0.90, tail-risk AUC ≈ 0.91, and the trust score cleanly separated high-error from low-error rows.
-
-## 6. Usage
+### 2.1 Install
 
 ```bash
-# Water (rule-based baseline available)
-python train_prism.py --train-file train_clean.csv --test-file test_clean.csv \
-  --target-col esg_firma_esg-bewertung__input__wasserverbrauch-m3 \
-  --baseline-col esg_firma_wasser_berechnet \
-  --leakage-features "<water leakage columns>"
+pip install numpy pandas scikit-learn
+```
 
-# Electricity (no baseline -> synthesized EB prior anchor)
-python train_prism.py --train-file train_clean.csv --test-file test_clean.csv \
+Place `train_prism.py` (and optionally `measure_error.py`) in your project folder with `train_clean.csv` and `test_clean.csv`.
+
+### 2.2 Configure the task (one-time)
+
+Open `train_prism.py` and edit the **Defaults** block at the top:
+
+```python
+DEFAULT_TARGET_COL = "your_target_column"
+DEFAULT_BASELINE_COL = ""          # leave "" if no baseline
+LEAKAGE_FEATURES = { ... }         # columns that must not be used as features
+```
+
+Alternatively, pass the same values on the command line (see Section 6).
+
+### 2.3 Run prediction
+
+**Electricity (no baseline):**
+
+```bash
+python train_prism.py \
+  --train-file train_clean.csv \
+  --test-file test_clean.csv \
   --target-col esg_firma_esg-bewertung__input__elektrizitaetsverbrauch-kwh
 ```
 
-Key knobs: `--objective` (default `log_mae`), `--median-guard-ratio` / `--mae-guard-ratio` (default 1.05), `--min-rel-gain`, `--prior-levels`, `--disable-tail-switch`, `--interval-alpha`.
+**Water (with baseline):**
+
+```bash
+python train_prism.py \
+  --train-file train_clean.csv \
+  --test-file test_clean.csv \
+  --target-col esg_firma_esg-bewertung__input__wasserverbrauch-m3 \
+  --baseline-col esg_firma_wasser_berechnet
+```
+
+### 2.4 Check outputs
+
+| File | What to look at |
+|------|-----------------|
+| `generated.csv` | `generated`, `generated_low`, `generated_high`, `generated_trust`, `generated_tail_risk` |
+| `prism_report.json` | `fallback_to_anchor`, `selected` (λ, tail settings), OOF metrics |
+| Console | `fallback_to_anchor=False` means a model correction was deployed |
+
+### 2.5 Evaluate (optional, labels required)
+
+```bash
+python measure_error.py --file generated.csv
+```
+
+Use the same `--target-col` / `--generated-col` as in training if they differ from script defaults.
+
+---
+
+## 3. Our contributions
+
+The following are the main methodological and engineering outcomes of this work for the ESG prediction setting.
+
+### 3.1 Anchor-constrained prediction
+
+Predictions are expressed as **anchor + controlled deviation**:
+
+- Water: the rule-based baseline is the anchor.
+- Electricity: a hierarchical empirical-Bayes prior (shrunk group medians over selected categorical fields such as industry) is the anchor.
+
+In log space, the final estimate shrinks toward the anchor by a coefficient λ. λ is chosen by cross-validation on the training set. **If no candidate reliably beats the anchor, the tool falls back to the anchor.**  
+This design addresses a failure mode observed with earlier residual-correction pipelines: overall error metrics could look acceptable while MedianAE on typical firms degraded sharply.
+
+### 3.2 Robust modeling for heavy-tailed targets
+
+Targets are transformed with `log1p` and modeled with **quantile Gradient Boosting** (5% / 50% / 75% / 90% / 95%). The median serves typical firms; a separate tail-risk score identifies likely high consumers and can switch those rows to an upper quantile.  
+
+Relative to the previous stack (residual correction + gate + multi-α + ratio clipping), deployment is reduced to **anchor shrinkage + optional tail switch + two hard guards**, which is easier to maintain and reproduce.
+
+### 3.3 Deployment guards
+
+When a real baseline is available, cross-validation enforces:
+
+
+| Guard                 | Default rule                                                        | Role                                               |
+| --------------------- | ------------------------------------------------------------------- | -------------------------------------------------- |
+| MedianAE guard        | Candidate MedianAE may not exceed baseline MedianAE by more than 5% | Protects quality on the majority of firms          |
+| MAE guard             | Same for MAE                                                        | Blocks overall error regression                    |
+| Minimum relative gain | Less than 0.5% gain vs. anchor → fallback                           | Avoids deploying changes with no practical benefit |
+
+
+
+
+### 3.4 Actionable auxiliary outputs
+
+Each test row includes:
+
+
+| Column                             | Meaning                                            | Business use                                 |
+| ---------------------------------- | -------------------------------------------------- | -------------------------------------------- |
+| `generated`                        | Point prediction                                   | Primary result                               |
+| `generated_low` / `generated_high` | Conformal ~90% interval                            | Risk bounds and audit trail                  |
+| `generated_trust`                  | Trust score in [0, 1] (narrower interval → higher) | Prioritize low-trust rows for review         |
+| `generated_tail_risk`              | Probability of a high-consumption tail case        | Flag firms that may dominate aggregate error |
+
+
+
+
+### 3.5 One pipeline for both task types
+
+Water (with baseline) and electricity (without baseline) share the same code path. Leakage columns are configured at the top of the script and excluded during training. Feature cleaning uses heuristics (type inference, datetime expansion, ID removal) and **does not depend on an LLM**.
+
+---
+
+
+
+## 4. Scope and data requirements
+
+### 4.1 Suitable use cases
+
+- Tabular data with positive continuous targets;
+- Training CSV with a target column; test CSV with matching feature columns (target on test is optional and unused);
+- Recommended: at least 50 valid training rows (enforced by the tool).
+
+
+
+### 4.2 Inputs
+
+
+| File         | Required columns            | Notes                                 |
+| ------------ | --------------------------- | ------------------------------------- |
+| Training set | Target + features           | Used for fitting and OOF tuning       |
+| Test set     | Features                    | Used for inference; optional baseline |
+| Leakage list | Configured in script or CLI | Excluded from model features          |
+
+
+
+
+### 4.3 Outputs
+
+
+| File                          | Content                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `generated.csv` (default)     | Test table plus prediction, interval, trust, and tail-risk columns |
+| `prism_report.json` (default) | Tuning choices, OOF metrics, stratified diagnostics                |
+| `prism_oof.csv` (default)     | Training OOF predictions for internal analysis                     |
+
+
+---
+
+
+
+## 5. How to run
+
+### 5.1 Environment
+
+```text
+Python 3.9+
+numpy, pandas, scikit-learn
+```
+
+
+
+### 5.2 Configuration
+
+Edit the **Defaults** section at the top of `train_prism.py`:
+
+```python
+DEFAULT_TARGET_COL = "..."      # target column name
+DEFAULT_BASELINE_COL = "..."    # baseline column; use "" if none
+LEAKAGE_FEATURES = { ... }      # leakage feature set
+```
+
+
+
+### 5.3 Examples
+
+**Water (rule-based baseline available):**
+
+```bash
+python train_prism.py \
+  --train-file train_clean.csv \
+  --test-file test_clean.csv \
+  --target-col esg_firma_esg-bewertung__input__wasserverbrauch-m3 \
+  --baseline-col esg_firma_wasser_berechnet
+```
+
+**Electricity (no baseline → synthesized prior anchor):**
+
+```bash
+python train_prism.py \
+  --train-file train_clean.csv \
+  --test-file test_clean.csv \
+  --target-col esg_firma_esg-bewertung__input__elektrizitaetsverbrauch-kwh
+```
+
+
+
+### 5.4 Offline evaluation (optional)
+
+When the test file contains ground truth:
+
+```bash
+python measure_error.py --file generated.csv
+```
+
+If no baseline column is present, `measure_error.py` reports metrics for `generated` only. By default it reports primary metrics after a fair trim of the worst 5% of rows.
+
+---
+
+## 6. Command-line reference
+
+All flags accept values on the command line or fall back to the **Defaults** block in each script. Paths may be relative or absolute. Column names are case-sensitive strings that must exist in the CSV header.
+
+### 6.1 `train_prism.py`
+
+#### I/O and columns
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--train-file` | `str` (file path) | `train_clean.csv` | Training CSV. Must exist. |
+| `--test-file` | `str` (file path) | `test_clean.csv` | Test CSV. Must exist. |
+| `--output-file` | `str` (file path) | `generated.csv` | Output CSV with predictions. |
+| `--target-col` | `str` | see script | Target column in **train** file (required there). |
+| `--baseline-col` | `str` | `""` (empty) | Baseline column name. Empty string → no baseline; prior anchor is synthesized. If set but missing in train, a warning is printed and no-baseline mode is used. |
+| `--generated-col` | `str` | `generated` | Name of the point-prediction column. Interval/trust columns use this as a prefix (`{col}_low`, etc.). |
+| `--leakage-features` | `str` | see `LEAKAGE_FEATURES` | Comma-separated column names excluded from model features. Use `""` to disable. Derived columns (`col__year`, etc.) matching a root name are excluded too. |
+| `--report-file` | `str` (file path) | `prism_report.json` | JSON report path. |
+| `--oof-file` | `str` (file path) | `prism_oof.csv` | Training OOF diagnostic CSV. |
+
+#### Model and cross-validation
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--folds` | `int` | `5` | integer ≥ 2 | Cross-validation folds for OOF tuning and prior construction. |
+| `--n-estimators` | `int` | `400` | positive integer | Trees per quantile regressor and tail classifier. |
+| `--learning-rate` | `float` | `0.06` | positive float | HistGradientBoosting learning rate. |
+| `--seed` | `int` | `42` | integer | Random seed for folds and models. |
+
+#### Tuning objective and guards
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--objective` | `str` | `log_mae` | `mae`, `median_ae`, `wape`, `log_mae`, `trimmed_mae90` | Metric minimized when selecting shrinkage λ and tail settings on OOF predictions. |
+| `--min-rel-gain` | `float` | `0.005` | float ≥ 0 | Minimum **relative** OOF improvement vs. anchor on `--objective` before deploying the model (when a real baseline exists). Otherwise fallback to anchor. |
+| `--median-guard-ratio` | `float` | `1.05` | float; `≤ 0` disables | Reject any candidate whose OOF MedianAE exceeds anchor MedianAE × this factor (baseline mode only). |
+| `--mae-guard-ratio` | `float` | `1.05` | float; `≤ 0` disables | Same for MAE. |
+
+#### Prior anchor (no-baseline mode)
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--prior-levels` | `int` | `3` | non-negative integer | Max number of categorical columns in the hierarchical EB prior. `0` → global median only. |
+| `--prior-shrinkage` | `float` | `20.0` | float > 0 | Pseudo-count *m* for shrinking group medians toward the parent level. |
+| `--disable-prior-anchor` | flag | off | present / absent | If set, do not build the EB prior; use the global training median as anchor when no baseline column is available. |
+
+#### Tail handling
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--tail-quantile` | `float` | `0.9` | float in (0, 1) | Training-target quantile above which a row is labeled “tail” for the risk classifier. |
+| `--disable-tail-switch` | flag | off | present / absent | If set, never switch high-risk rows to an upper quantile; always use the median head. |
+
+#### Feature filtering and domain weighting
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--min-feature-non-null-ratio` | `float` | `0.01` | float in [0, 1) | Drop features with lower non-null rate in train. |
+| `--disable-domain-weighting` | flag | off | present / absent | Disable train→test feature reweighting during OOF tuning. |
+| `--domain-weight-max` | `float` | `10.0` | float ≥ 1 | Cap on importance weights from the domain classifier. |
+
+#### Intervals
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--interval-alpha` | `float` | `0.1` | float in (0, 1) | Nominal miscoverage for conformal calibration (`0.1` → ~90% target interval). |
+
+**Boolean flags** (`--disable-tail-switch`, `--disable-prior-anchor`, `--disable-domain-weighting`): pass the flag alone to enable; omit it to leave the default (feature enabled).
+
+**Example with several overrides:**
+
+```bash
+python train_prism.py \
+  --train-file data/train.csv \
+  --test-file data/test.csv \
+  --target-col my_target \
+  --folds 5 \
+  --objective log_mae \
+  --median-guard-ratio 1.05 \
+  --min-rel-gain 0.01 \
+  --seed 123
+```
+
+---
+
+### 6.2 `measure_error.py`
+
+Used **after** `train_prism.py` when labeled test (or holdout) data are available. Does not affect training.
+
+| Flag | Type | Default | Valid range / choices | Description |
+|------|------|---------|----------------------|-------------|
+| `--file` | `str` (file path) | `generated.csv` | `.csv`, `.xlsx`, `.xls` | Input table with target and prediction columns. |
+| `--target-col` | `str` | see script | column name | Ground-truth column. |
+| `--generated-col` | `str` | `generated` | column name | Prediction column to evaluate. |
+| `--baseline-col` | `str` | `""` | column name or empty | Optional baseline for side-by-side metrics. Empty or column absent → generated-only table. |
+| `--leakage-features` | `str` | see script | comma-separated names | Only used when `--exclude-leakage-rows` is enabled. |
+| `--exclude-leakage-rows` | bool | `False` | `--exclude-leakage-rows` / `--no-exclude-leakage-rows` | Drop rows with any non-empty leakage column before metrics. Usually leave **off**. |
+| `--trim-worst-fraction` | `float` | `0.05` | float in [0, 0.5) | Fraction of worst rows dropped before **primary** metrics. `0` = all rows. |
+| `--trim-by` | `str` | `error` | `error`, `target` | `error`: trim by max(\|gen−target\|, \|base−target\|). `target`: trim by largest \|target\| (stable across runs). |
+| `--show-full-metrics` | flag | off | present / absent | Also print metrics on all valid rows (not only the trimmed primary report). |
+
+**Example:**
+
+```bash
+python measure_error.py \
+  --file generated.csv \
+  --target-col esg_firma_esg-bewertung__input__elektrizitaetsverbrauch-kwh \
+  --generated-col generated \
+  --trim-worst-fraction 0.05 \
+  --show-full-metrics
+```
+
+---
+
+## 7. How to read the results
+
+After a run, check the console summary and `prism_report.json`:
+
+1. `fallback_to_anchor`
+  - `True`: no candidate passed the guards / minimum gain; output equals the anchor (or baseline).  
+  - `False`: a model correction was deployed; inspect the chosen `lambda`.
+2. **OOF model vs OOF anchor**
+  Training cross-validation metrics (MAE, MedianAE, log_mae, …). These support internal review and **are not** a claim about labeled test performance (test labels are not used in training).
+3. `oof_stratified` **in** `prism_report.json`
+  MAE and win rates by target-magnitude bins—useful to show where the model helps and where the baseline still leads.
+4. `generated_trust` **and** `generated_tail_risk`
+  Prefer manual review for low-trust or high tail-risk rows.
+
+---
+
+
+
+## 8. Quality controls
+
+
+| Concern           | Measure                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------ |
+| Label leakage     | Test target is not used for training, tuning, or interval calibration                                  |
+| Prior anchor      | Hierarchical prior is fit out-of-fold so each fold’s labels do not leak into its own prior             |
+| Domain shift      | Optional reweighting of training validation rows by feature similarity to the test set (features only) |
+| Interval coverage | Conformalized quantile regression (CQR) widens intervals using OOF conformity scores                   |
+| Safe deployment   | MedianAE / MAE guards plus anchor fallback                                                             |
+
+
+---
+
+
+
+## 9. Minimal delivery package
+
+
+| File               | Required                                        |
+| ------------------ | ----------------------------------------------- |
+| `train_prism.py`   | Yes                                             |
+| `METHOD_PRISM.md`  | Recommended                                     |
+| `measure_error.py` | Optional (evaluation)                           |
+| `requirements.txt` | Recommended (`numpy`, `pandas`, `scikit-learn`) |
+
+
+Training and test CSVs are provided by the user for each task.
+
+---
+
+
+
+## 10. FAQ
+
+**Q: If the test file contains a target column, is it used?**  
+A: No. PRISM only reads test features and an optional baseline.
+
+**Q: Can we run without a baseline column?**  
+A: Yes. The tool selects categorical fields and builds an empirical-Bayes prior as the anchor.
+
+**Q: Predictions equal the baseline, is that a failure?**  
+A: Not necessarily. It usually means fallback was triggered: no candidate passed the guards or the minimum gain. That is intentional safety behavior.
+
+---
+
+*This document matches the current* `train_prism.py` *implementation. Parameter defaults are those in the script’s Defaults section.*
